@@ -1,0 +1,17 @@
+# HVAC System Analyzer - Requirements
+# Python 3.10+ recommended
+
+# GUI Framework
+PyQt6>=6.4.0
+PyQt6-Qt6>=6.4.0
+
+# Data Processing
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Plotting and Visualization
+pyqtgraph>=0.13.0
+
+# Additional dependencies
+python-dateutil>=2.8.2
+

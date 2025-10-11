@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
                              QLineEdit, QCheckBox, QTreeWidget, QTreeWidgetItem, 
                              QLabel, QGroupBox, QFrame, QTreeWidgetItemIterator,
-                             QAbstractItemView, QMenu, QInputDialog)
+                             QAbstractItemView, QMenu, QInputDialog, QMessageBox)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QAction
 
@@ -23,11 +23,6 @@ class SensorPanel(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        header_frame = QFrame()
-        header_frame.setStyleSheet("background-color: #2196F3; color: white; padding: 10px; border: none;")
-        header_layout = QHBoxLayout(header_frame)
-        header_layout.addWidget(QLabel("<h3>Sensor Panel</h3>"))
-        main_layout.addWidget(header_frame)
 
         content_widget = QWidget()
         content_layout = QVBoxLayout(content_widget)
@@ -49,8 +44,16 @@ class SensorPanel(QWidget):
         self.search_bar.setPlaceholderText("Search sensors...")
         controls_layout.addWidget(self.search_bar)
         
-        self.select_all_graph_checkbox = QCheckBox("Select All for Graph")
-        controls_layout.addWidget(self.select_all_graph_checkbox)
+        # Select all graph checkbox with small text and right-aligned checkbox
+        graph_all_layout = QHBoxLayout()
+        graph_all_label = QLabel("<small>Graph All</small>")
+        graph_all_layout.addWidget(graph_all_label)
+        graph_all_layout.addStretch()
+        self.select_all_graph_checkbox = QCheckBox()
+        self.select_all_graph_checkbox.setTristate(True)  # Allow partially checked state
+        self.select_all_graph_checkbox.setToolTip("Check/uncheck all sensors for graphing")
+        graph_all_layout.addWidget(self.select_all_graph_checkbox)
+        controls_layout.addLayout(graph_all_layout)
         content_layout.addWidget(controls_group)
         
         self.sensor_tree = QTreeWidget()
@@ -61,6 +64,8 @@ class SensorPanel(QWidget):
         self.sensor_tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         # --- NEW: Enable the custom context menu ---
         self.sensor_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        # --- NEW: Double-click header to collapse/expand all ---
+        self.sensor_tree.header().sectionDoubleClicked.connect(self.toggle_expand_all)
         content_layout.addWidget(self.sensor_tree, 1)
 
         self.stats_label = QLabel("Sensors: 0 | Mapped: 0 | Selected: 0")
@@ -72,20 +77,50 @@ class SensorPanel(QWidget):
         self.sensor_tree.itemClicked.connect(self.on_item_clicked)
         self.search_bar.textChanged.connect(self.filter_tree_and_select)
         self.sensor_tree.customContextMenuRequested.connect(self.show_context_menu)
+        self.select_all_graph_checkbox.stateChanged.connect(self.on_select_all_graph_changed)
 
     def on_item_clicked(self, item, column):
         """Handles clicks on tree items."""
-        if item.childCount() > 0: # Is a group
+        # --- GROUP ITEM CLICKED ---
+        if item.childCount() > 0:
+            if column == 2:  # Graph checkbox on group
+                self.toggle_group_graph(item)
+            else:  # Select all sensors in group
+                self.select_all_in_group(item)
             return
 
+        # --- SENSOR ITEM CLICKED ---
         sensor_name = item.text(0)
         if column == 2:
             is_checked = item.checkState(2) == Qt.CheckState.Checked
             self.data_manager.set_sensor_graphed(sensor_name, is_checked)
             self.data_manager.data_changed.emit()
         else:
-            # Single-clicking a sensor still highlights it for placement
-            self.data_manager.toggle_sensor_selection(sensor_name)
+            # Check if Ctrl or Shift is pressed for multi-selection
+            from PyQt6.QtWidgets import QApplication
+            modifiers = QApplication.keyboardModifiers()
+            is_multi_select = (modifiers == Qt.KeyboardModifier.ControlModifier or 
+                             modifiers == Qt.KeyboardModifier.ShiftModifier)
+            
+            self.data_manager.toggle_sensor_selection(sensor_name, multi_select=is_multi_select)
+    
+    def on_select_all_graph_changed(self, state):
+        """Handles the select all graph checkbox toggle."""
+        # If partially checked, treat click as "check all"
+        if state == Qt.CheckState.PartiallyChecked.value:
+            is_checked = True
+        else:
+            is_checked = state == Qt.CheckState.Checked.value
+        
+        # Get all sensors
+        all_sensors = self.data_manager.get_sensor_list()
+        
+        # Update all sensors' graph state
+        for sensor_name in all_sensors:
+            self.data_manager.set_sensor_graphed(sensor_name, is_checked)
+        
+        # Emit data changed to update UI
+        self.data_manager.data_changed.emit()
 
     def show_context_menu(self, position):
         """Creates and displays the right-click menu."""
@@ -107,7 +142,7 @@ class SensorPanel(QWidget):
             menu.addAction(cut_action)
 
         # --- Menu actions for GROUP items ---
-        if item_under_cursor and item_under_cursor.childCount() > 0:
+        if item_under_cursor and item_under_cursor.childCount() >= 0 and item_under_cursor.parent() is None:
             rename_action = QAction("Rename Group", self)
             rename_action.triggered.connect(lambda: self.rename_group(item_under_cursor))
             menu.addAction(rename_action)
@@ -116,6 +151,10 @@ class SensorPanel(QWidget):
                 paste_action = QAction(f"Paste {len(self.clipboard)} sensor(s)", self)
                 paste_action.triggered.connect(lambda: self.paste_sensors(item_under_cursor))
                 menu.addAction(paste_action)
+            
+            delete_action = QAction("Delete Group", self)
+            delete_action.triggered.connect(lambda: self.delete_group(item_under_cursor))
+            menu.addAction(delete_action)
 
         if menu.actions():
             menu.exec(self.sensor_tree.viewport().mapToGlobal(position))
@@ -136,6 +175,16 @@ class SensorPanel(QWidget):
         new_name, ok = QInputDialog.getText(self, 'Rename Group', 'Enter new name:', text=old_name)
         if ok and new_name and new_name != old_name:
             self.data_manager.rename_group(old_name, new_name)
+    
+    def delete_group(self, group_item):
+        """Deletes the group from the DataManager."""
+        group_name = group_item.text(0)
+        reply = QMessageBox.question(self, 'Delete Group', 
+                                     f'Are you sure you want to delete the group "{group_name}"?\n\nSensors will be moved to Ungrouped.',
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                     QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
+            self.data_manager.delete_group(group_name)
 
     def cut_sensors(self):
         """Copies selected sensor names to the internal clipboard."""
@@ -153,6 +202,18 @@ class SensorPanel(QWidget):
 
     def update_ui(self):
         """Redraws the sensor list with groups based on the DataManager's state."""
+        # Save expansion states and search text before clearing
+        expansion_states = {}
+        iterator = QTreeWidgetItemIterator(self.sensor_tree)
+        while iterator.value():
+            item = iterator.value()
+            if item.childCount() > 0:  # Is a group
+                expansion_states[item.text(0)] = item.isExpanded()
+            iterator += 1
+        
+        # Save current search text
+        current_search = self.search_bar.text()
+        
         self.sensor_tree.clear()
         
         all_sensors = set(self.data_manager.get_sensor_list())
@@ -161,51 +222,231 @@ class SensorPanel(QWidget):
         # Create items for each group and its sensors
         for group_name, sensor_list in sorted(self.data_manager.sensor_groups.items()):
             group_item = QTreeWidgetItem(self.sensor_tree, [group_name])
-            group_item.setExpanded(True)
+            # Restore expansion state (default to True for new groups)
+            group_item.setExpanded(expansion_states.get(group_name, True))
+            group_item.setFlags(group_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            group_item.setCheckState(2, Qt.CheckState.Unchecked)  # Start unchecked
+            # Subtle background for group headers across all columns
+            group_item.setBackground(0, QColor("#e3f2fd"))  # Light blue
+            group_item.setBackground(1, QColor("#e3f2fd"))
+            group_item.setBackground(2, QColor("#e3f2fd"))
             for sensor_name in sorted(sensor_list):
                 if sensor_name in all_sensors:
                     self.create_sensor_item(sensor_name, group_item)
                     grouped_sensors.add(sensor_name)
+            self.update_group_checkbox_state(group_item)
         
         # Create "Ungrouped" for any remaining sensors
         ungrouped_list = sorted(list(all_sensors - grouped_sensors))
         if ungrouped_list:
             ungrouped_item = QTreeWidgetItem(self.sensor_tree, ["Ungrouped"])
-            ungrouped_item.setExpanded(True)
+            ungrouped_item.setExpanded(expansion_states.get("Ungrouped", True))
+            ungrouped_item.setFlags(ungrouped_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            ungrouped_item.setCheckState(2, Qt.CheckState.Unchecked)
+            ungrouped_item.setBackground(0, QColor("#e3f2fd"))  # Light blue
+            ungrouped_item.setBackground(1, QColor("#e3f2fd"))
+            ungrouped_item.setBackground(2, QColor("#e3f2fd"))
             for sensor_name in ungrouped_list:
                 self.create_sensor_item(sensor_name, ungrouped_item)
+            self.update_group_checkbox_state(ungrouped_item)
 
         self.update_stats()
+        
+        # Update the "Select All Graph" checkbox state
+        self.update_select_all_graph_checkbox()
+        
+        # Reapply search filter if there was one (don't auto-select when reapplying)
+        if current_search:
+            self.filter_tree_and_select(current_search, auto_select=False)
+        
+        # Ensure selected sensors are visible (expand their groups if collapsed)
+        for sensor_name in self.data_manager.selected_sensors:
+            self.ensure_sensor_visible(sensor_name)
     
     def create_sensor_item(self, sensor_name, parent_item):
         """Helper function to create and configure a single sensor item."""
         sensor_item = QTreeWidgetItem(parent_item)
         sensor_item.setText(0, sensor_name)
         
+        # Priority: Selected > Mapped > Unmapped (apply to all columns)
         if sensor_name in self.data_manager.selected_sensors:
-            sensor_item.setBackground(0, QColor("#ffc107"))
+            color = QColor("#ffc107")  # Yellow for selected
+        elif sensor_name in self.data_manager.mappings:
+            color = QColor("#c8e6c9")  # Light green for mapped
+        else:
+            color = QColor("#ffccbc")  # Light orange for unmapped
         
-        sensor_item.setText(1, "N/A")
+        sensor_item.setBackground(0, color)
+        sensor_item.setBackground(1, color)
+        sensor_item.setBackground(2, color)
+        
+        # Show sensor number in the Value column
+        sensor_number = self.data_manager.get_sensor_number(sensor_name)
+        if sensor_number is not None:
+            sensor_item.setText(1, str(sensor_number))
+        else:
+            sensor_item.setText(1, "N/A")
+        
         sensor_item.setFlags(sensor_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
         if sensor_name in self.data_manager.graph_sensors:
              sensor_item.setCheckState(2, Qt.CheckState.Checked)
         else:
              sensor_item.setCheckState(2, Qt.CheckState.Unchecked)
 
-    def filter_tree_and_select(self, text):
-        """Filters the tree and auto-selects all visible items."""
-        self.sensor_tree.clearSelection()
+    def filter_tree_and_select(self, text, auto_select=True):
+        """Filters the tree and optionally auto-selects all visible items."""
+        if auto_select:
+            self.sensor_tree.clearSelection()
         iterator = QTreeWidgetItemIterator(self.sensor_tree)
         is_hidden = text.lower() != ""
         
+        # First pass: hide/show sensors based on search
         while iterator.value():
             item = iterator.value()
             if item.childCount() == 0: # Is a sensor item
                 matches = text.lower() in item.text(0).lower()
                 item.setHidden(is_hidden and not matches)
-                if not item.isHidden():
+                if auto_select and not item.isHidden():
                     item.setSelected(True)
             iterator += 1
+        
+        # Second pass: hide groups that have no visible sensors
+        iterator = QTreeWidgetItemIterator(self.sensor_tree)
+        while iterator.value():
+            item = iterator.value()
+            if item.childCount() > 0:  # Is a group item
+                # Check if any child sensors are visible
+                has_visible_children = False
+                for i in range(item.childCount()):
+                    child = item.child(i)
+                    if not child.isHidden():
+                        has_visible_children = True
+                        break
+                # Hide the group if no children are visible
+                item.setHidden(is_hidden and not has_visible_children)
+            iterator += 1
+
+    def toggle_expand_all(self, section):
+        """Double-click header to collapse/expand all groups."""
+        if section == 0:  # Only on first column
+            iterator = QTreeWidgetItemIterator(self.sensor_tree)
+            # Check if any group is expanded
+            any_expanded = False
+            while iterator.value():
+                item = iterator.value()
+                if item.childCount() > 0 and item.isExpanded():
+                    any_expanded = True
+                    break
+                iterator += 1
+            
+            # Toggle all groups
+            iterator = QTreeWidgetItemIterator(self.sensor_tree)
+            while iterator.value():
+                item = iterator.value()
+                if item.childCount() > 0:
+                    item.setExpanded(not any_expanded)
+                iterator += 1
+    
+    def select_all_in_group(self, group_item):
+        """Selects all sensors in a group."""
+        from PyQt6.QtWidgets import QApplication
+        modifiers = QApplication.keyboardModifiers()
+        is_multi_select = (modifiers == Qt.KeyboardModifier.ControlModifier or 
+                         modifiers == Qt.KeyboardModifier.ShiftModifier)
+        
+        if not is_multi_select:
+            self.data_manager.selected_sensors.clear()
+        
+        for i in range(group_item.childCount()):
+            child = group_item.child(i)
+            sensor_name = child.text(0)
+            self.data_manager.selected_sensors.add(sensor_name)
+        
+        self.data_manager.data_changed.emit()
+    
+    def update_group_checkbox_state(self, group_item):
+        """Updates group checkbox based on children states."""
+        if group_item.childCount() == 0:
+            return
+        
+        all_checked = True
+        any_checked = False
+        for i in range(group_item.childCount()):
+            child = group_item.child(i)
+            if child.checkState(2) == Qt.CheckState.Checked:
+                any_checked = True
+            else:
+                all_checked = False
+        
+        if all_checked:
+            group_item.setCheckState(2, Qt.CheckState.Checked)
+        elif any_checked:
+            group_item.setCheckState(2, Qt.CheckState.PartiallyChecked)
+        else:
+            group_item.setCheckState(2, Qt.CheckState.Unchecked)
+    
+    def toggle_group_graph(self, group_item):
+        """Toggles graph checkbox for all sensors in a group."""
+        # Check if all children are checked
+        all_checked = True
+        for i in range(group_item.childCount()):
+            child = group_item.child(i)
+            if child.checkState(2) != Qt.CheckState.Checked:
+                all_checked = False
+                break
+        
+        # Toggle all children
+        new_state = not all_checked
+        for i in range(group_item.childCount()):
+            child = group_item.child(i)
+            sensor_name = child.text(0)
+            self.data_manager.set_sensor_graphed(sensor_name, new_state)
+        
+        self.data_manager.data_changed.emit()
+    
+    def ensure_sensor_visible(self, sensor_name):
+        """Ensures a sensor is visible by expanding its group if needed."""
+        # Find the sensor item in the tree
+        iterator = QTreeWidgetItemIterator(self.sensor_tree)
+        while iterator.value():
+            item = iterator.value()
+            # Check if this is the sensor we're looking for
+            if item.childCount() == 0 and item.text(0) == sensor_name:
+                # Expand the parent group if collapsed
+                parent = item.parent()
+                if parent and not parent.isExpanded():
+                    parent.setExpanded(True)
+                # Scroll to make it visible
+                self.sensor_tree.scrollToItem(item)
+                return
+            iterator += 1
+    
+    def update_select_all_graph_checkbox(self):
+        """Updates the 'Select All Graph' checkbox based on current graph state."""
+        all_sensors = self.data_manager.get_sensor_list()
+        if not all_sensors:
+            self.select_all_graph_checkbox.setCheckState(Qt.CheckState.Unchecked)
+            return
+        
+        # Check how many sensors are graphed
+        graphed_count = len(self.data_manager.graph_sensors)
+        total_count = len(all_sensors)
+        
+        # Block signals to avoid triggering the handler
+        self.select_all_graph_checkbox.blockSignals(True)
+        
+        if graphed_count == total_count:
+            # All sensors are graphed
+            self.select_all_graph_checkbox.setCheckState(Qt.CheckState.Checked)
+        elif graphed_count == 0:
+            # No sensors are graphed
+            self.select_all_graph_checkbox.setCheckState(Qt.CheckState.Unchecked)
+        else:
+            # Some sensors are graphed
+            self.select_all_graph_checkbox.setCheckState(Qt.CheckState.PartiallyChecked)
+        
+        # Unblock signals
+        self.select_all_graph_checkbox.blockSignals(False)
 
     def update_stats(self):
         total = len(self.data_manager.get_sensor_list())
