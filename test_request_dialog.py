@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QLineEdit, QComboBox, QTextEdit, QSpinBox, QDoubleSpinBox, QCheckBox,
     QTableWidget, QTableWidgetItem, QPushButton, QLabel, QGroupBox,
     QMessageBox, QInputDialog, QHeaderView, QScrollArea, QWidget,
+    QButtonGroup,
 )
 from PyQt6.QtCore import Qt
 
@@ -141,32 +142,84 @@ class TestRequestDialog(QDialog):
 
         # Case / topology ----------------------------------------------------
         case = QGroupBox('Case & topology  (drives the auto-diagram later)')
-        cf = QFormLayout(case)
+        cv = QVBoxLayout(case)
+        cv.setSpacing(6)
+
+        # ── top form: case model, family ────────────────────────────────────
+        top_form = QFormLayout()
         self.cmb_case_model = QComboBox()
         self.cmb_case_model.setEditable(True)
         self.cmb_case_model.addItems(self.lib.known_case_models())
         self.cmb_family = QComboBox()
         self.cmb_family.addItems(['Reach-in (non-modular)', 'Modular',
                                   'Cassette', 'Open', 'Doored'])
+        top_form.addRow('Case model:', self.cmb_case_model)
+        top_form.addRow('Family:', self.cmb_family)
+        cv.addLayout(top_form)
+
+        # ── Modular button row ───────────────────────────────────────────────
+        mod_row = QHBoxLayout()
+        mod_row.addWidget(QLabel('Modular:'))
+        self._mod_btn_group = QButtonGroup(self)
+        self._mod_btn_group.setExclusive(False)
+        self._mod_btns: list[QPushButton] = []
+        for i in range(1, 4):
+            btn = QPushButton(f'{i} Module{"s" if i > 1 else ""}')
+            btn.setCheckable(True)
+            btn.setMinimumWidth(100)
+            btn.clicked.connect(lambda checked, n=i: self._pick_modular(n))
+            self._mod_btn_group.addButton(btn, i)
+            self._mod_btns.append(btn)
+            mod_row.addWidget(btn)
+        mod_row.addStretch()
+        cv.addLayout(mod_row)
+
+        # ── Non-modular (door) button row ────────────────────────────────────
+        door_row = QHBoxLayout()
+        door_row.addWidget(QLabel('Non-Modular:'))
+        self._door_btn_group = QButtonGroup(self)
+        self._door_btn_group.setExclusive(False)
+        self._door_btns: list[QPushButton] = []
+        for i in range(1, 6):
+            btn = QPushButton(f'{i}Dr')
+            btn.setCheckable(True)
+            btn.setMinimumWidth(55)
+            btn.clicked.connect(lambda checked, n=i: self._pick_door(n))
+            self._door_btn_group.addButton(btn, i)
+            self._door_btns.append(btn)
+            door_row.addWidget(btn)
+        door_row.addStretch()
+        cv.addLayout(door_row)
+
+        # ── bottom form: circuits, case type, shelf rows, system, cooling ───
+        bot_form = QFormLayout()
+        self.spn_circuits = QSpinBox(); self.spn_circuits.setRange(1, 24)
+        self.spn_circuits.setValue(6); self.spn_circuits.setMaximumWidth(120)
+        self.cmb_case_type = QComboBox()
+        self.cmb_case_type.addItems(['Doored', 'Open'])
+        self.cmb_case_type.setMaximumWidth(160)
+        self.spn_shelf_rows = QSpinBox(); self.spn_shelf_rows.setRange(3, 8)
+        self.spn_shelf_rows.setValue(5); self.spn_shelf_rows.setMaximumWidth(80)
         self.cmb_system = QComboBox()
         self.cmb_system.addItems(['shared', 'cassette'])
         self.cmb_system.setMaximumWidth(220)
-        self.spn_modules = QSpinBox(); self.spn_modules.setRange(1, 6)
-        self.spn_modules.setMaximumWidth(120)
-        self.spn_circuits = QSpinBox(); self.spn_circuits.setRange(1, 24)
-        self.spn_circuits.setValue(6)
-        self.spn_circuits.setMaximumWidth(120)
         self.cmb_cooling = QComboBox()
         self.cmb_cooling.addItems(['Water', 'Air'])
         self.cmb_cooling.setMaximumWidth(220)
         self.chk_doored = QCheckBox('Doored case')
-        cf.addRow('Case model:', self.cmb_case_model)
-        cf.addRow('Family:', self.cmb_family)
-        cf.addRow('System type:', self.cmb_system)
-        cf.addRow('Evaporator modules:', self.spn_modules)
-        cf.addRow('Circuits per coil:', self.spn_circuits)
-        cf.addRow('Condenser cooling:', self.cmb_cooling)
-        cf.addRow('', self.chk_doored)
+        bot_form.addRow('Circuits per coil:', self.spn_circuits)
+        bot_form.addRow('Case type:', self.cmb_case_type)
+        bot_form.addRow('Shelf rows:', self.spn_shelf_rows)
+        bot_form.addRow('System type:', self.cmb_system)
+        bot_form.addRow('Condenser cooling:', self.cmb_cooling)
+        bot_form.addRow('', self.chk_doored)
+        cv.addLayout(bot_form)
+
+        # hidden state — set by button clicks
+        self._diag_mode  = 'modular'
+        self._num_modules = 3
+        self._num_doors   = 3
+        self._pick_modular(3)   # default: 3 modules selected
         root.addWidget(case)
 
         # Parts --------------------------------------------------------------
@@ -255,6 +308,24 @@ class TestRequestDialog(QDialog):
         outer.addWidget(bb)
 
     # ── helpers ──────────────────────────────────────────────────────────────
+    def _pick_modular(self, n: int):
+        """Select a Modular button and deselect all door buttons."""
+        self._diag_mode   = 'modular'
+        self._num_modules = n
+        for i, btn in enumerate(self._mod_btns, 1):
+            btn.setChecked(i == n)
+        for btn in self._door_btns:
+            btn.setChecked(False)
+
+    def _pick_door(self, n: int):
+        """Select a door-count button and deselect all modular buttons."""
+        self._diag_mode = 'door'
+        self._num_doors = n
+        for btn in self._mod_btns:
+            btn.setChecked(False)
+        for i, btn in enumerate(self._door_btns, 1):
+            btn.setChecked(i == n)
+
     def _add_target_row(self, t: dict = None):
         r = self.tbl_targets.rowCount()
         self.tbl_targets.insertRow(r)
@@ -301,9 +372,15 @@ class TestRequestDialog(QDialog):
         topo = rq.get('topology', {})
         self.cmb_family.setCurrentText(topo.get('case_family', ''))
         self.cmb_system.setCurrentText(topo.get('system_type', 'shared'))
-        self.spn_modules.setValue(int(topo.get('modules', 1) or 1))
+        saved_mode = topo.get('mode', 'modular')
+        if saved_mode == 'door':
+            self._pick_door(int(topo.get('num_doors', 3) or 3))
+        else:
+            self._pick_modular(int(topo.get('modules', 3) or 3))
         self.spn_circuits.setValue(int(topo.get('circuits_per_coil', 6) or 6))
         self.cmb_cooling.setCurrentText(topo.get('condenser_cooling', 'Water'))
+        self.cmb_case_type.setCurrentText(topo.get('case_type', 'Doored'))
+        self.spn_shelf_rows.setValue(int(topo.get('shelf_rows', 5) or 5))
         self.chk_doored.setChecked(bool(topo.get('doored')))
         for ptype, cmb in self.part_combos.items():
             p = rq.get('parts', {}).get(ptype)
@@ -348,9 +425,13 @@ class TestRequestDialog(QDialog):
         self.request['topology'] = {
             'case_family': self.cmb_family.currentText(),
             'system_type': self.cmb_system.currentText(),
-            'modules': self.spn_modules.value(),
+            'mode': self._diag_mode,
+            'modules': self._num_modules,
+            'num_doors': self._num_doors,
             'circuits_per_coil': self.spn_circuits.value(),
             'condenser_cooling': self.cmb_cooling.currentText(),
+            'case_type': self.cmb_case_type.currentText(),
+            'shelf_rows': self.spn_shelf_rows.value(),
             'doored': self.chk_doored.isChecked(),
         }
         for ptype, cmb in self.part_combos.items():
@@ -407,11 +488,14 @@ class TestRequestDialog(QDialog):
         dm.diagram_model.update(model)
         dm.diagram_model_changed.emit()
         topo = self.request.get('topology', {})
+        if topo.get('mode') == 'door':
+            layout_desc = f"{topo.get('num_doors')} door(s)"
+        else:
+            layout_desc = f"{topo.get('modules')} module(s)"
         QMessageBox.information(
             self, 'Diagram generated',
             f"Process diagram built from this request:\n"
-            f"• {topo.get('modules')} module(s), "
-            f"{topo.get('circuits_per_coil')} circuits per coil\n"
+            f"• {layout_desc}, {topo.get('circuits_per_coil')} circuits per coil\n"
             f"• {topo.get('condenser_cooling')}-cooled condenser\n\n"
             f"Switch to the Diagram tab to see it. Sensors are unmapped — "
             f"map them when the first CSV arrives.")

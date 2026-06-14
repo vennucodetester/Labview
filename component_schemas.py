@@ -377,5 +377,26 @@ SCHEMAS = {
             {"name": "outlet", "type": "out", "fluid_state": "any", "pressure_side": "any", "position": [0.5, 1]}
         ],
         "zones": []
+    },
+
+    "DecorativeRect": {
+        "properties": {
+            "bg_color":   {"type": "string", "default": "#E0E0E0"},
+            "label":      {"type": "string", "default": ""},
+            "text_color": {"type": "string", "default": "#000000"},
+            "circuit_label": {"type": "enum", "default": "None", "options": ["None"]}
+        },
+        "ports": [],
+        "zones": []
+    },
+
+    "Boundary": {
+        "properties": {
+            "label":        {"type": "string", "default": ""},
+            "stroke_color": {"type": "string", "default": "#AAAAAA"},
+            "circuit_label": {"type": "enum", "default": "None", "options": ["None"]}
+        },
+        "ports": [],
+        "zones": []
     }
 }

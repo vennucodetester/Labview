@@ -9,9 +9,13 @@
   "topology": {
     "case_family": "Modular",
     "system_type": "shared",
-    "modules": 2,
-    "circuits_per_coil": 3,
-    "condenser_cooling": "Water",
+    "mode": "door",
+    "modules": 3,
+    "num_doors": 5,
+    "circuits_per_coil": 5,
+    "condenser_cooling": "Air",
+    "case_type": "Doored",
+    "shelf_rows": 6,
     "doored": false
   },
   "parts": {},

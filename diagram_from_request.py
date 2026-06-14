@@ -256,21 +256,14 @@ def build_diagram_for_request(request: dict) -> dict:
     return build_shared_from_template(topo)
 
 def build_bare_minimum_diagram(request: dict) -> dict:
-    """Build a clean bare-minimum process diagram.
+    """Build a clean process diagram matching the test_loop.py reference.
 
-    Layout: Compressor → Condenser → [per module: TXV → Evaporator (N circuits)]
-            → per-module suction-header Junction → [multi-module Junction] → loopback
+    Layout: Compressor → Condenser → [per module: TXV → SplitterManifold
+            → Evaporator → CombinerManifold] → multi-junction → loopback
 
-    No Distributor, Header, SplitterManifold, or CombinerManifold components.
-    Circuit fan-out (TXV → evap inlets) uses N pre-routed pipes from the single
-    TXV.outlet.  Circuit fan-in (evap outlets → suction line) uses a thin Junction
-    (snapped_mode=Yes: inlets top, outlet bottom-center) whose port spacing matches
-    the Evaporator's dynamic_ports formula so all pipes are straight-vertical.
+    Below the refrigerant section: Airflow, Shelving, Doors decorative sections.
+    All geometry matches test_loop.py exactly.
     """
-    import math
-
-    def _snap(val):
-        return math.floor(val / 20 + 0.5) * 20
 
     def _circuit_xs(count, width=240, spacing=20):
         """Local x-positions of circuit ports. No snap — exact even spacing."""
@@ -279,44 +272,60 @@ def build_bare_minimum_diagram(request: dict) -> dict:
                 for i in range(1, count + 1)]
 
     topo = request.get('topology', {}) or {}
-    num_modules = max(1, min(3, int(topo.get('modules', 1) or 1)))
+    mode       = topo.get('mode', 'modular')
+    num_doors  = max(1, min(5, int(topo.get('num_doors', 3) or 3)))
+    case_type  = topo.get('case_type', 'Doored')
+    shelf_rows = max(3, min(8, int(topo.get('shelf_rows', 5) or 5)))
     num_circuits = max(1, int(topo.get('circuits_per_coil', 6) or 6))
     condenser_type = ('Water Cooled'
                       if str(topo.get('condenser_cooling', 'Water')).lower().startswith('w')
                       else 'Air Cooled')
 
-    CENTER_X   = 600
+    CENTER_X    = 600
     MOD_SPACING = 300
     COMP_W, COMP_H = 120, 60
     COND_W, COND_H = 120, 60
-    TXV_W,  TXV_H  = 120, 60
-    EVAP_W, EVAP_H = 240, 80
-    SUCT_H = 15     # suction-header Junction height
+    TXV_W, TXV_H   = 120, 60
+    EVAP_H = 80
+    DIST_H = 40   # SplitterManifold (distributor) above evap
+    HEAD_H = 40   # CombinerManifold (header) below evap
 
-    Y_COMP  = 100
-    Y_COND  = 200
-    Y_TXV   = 330
-    Y_EVAP  = 430
-    CKT_OUT_Y = Y_EVAP + EVAP_H + 20     # 530
-    Y_MULTI   = Y_EVAP + EVAP_H + 85     # 595 — multi-module collector (n>1)
+    Y_COMP   = 100
+    Y_COND   = 200
+    Y_TXV    = 330
+    Y_EVAP   = 445
+    BRANCH_Y = Y_COND + COND_H + 30   # 290 — fan-out level below condenser
+    DIST_Y   = Y_EVAP - DIST_H - 15   # 390 — distributor top
+    HEAD_Y   = Y_EVAP + EVAP_H        # 525 — header/combiner top
+    HEAD_OUT_Y = HEAD_Y + HEAD_H       # 565 — combiner outlet y
+    MERGE_Y  = Y_EVAP + EVAP_H + 85   # 610 — loopback horizontal level
 
-    BRANCH_Y  = Y_COND + COND_H + 30     # 290 — fan-out level below condenser
-    CKT_IN_Y  = Y_TXV  + TXV_H  + 20    # 410 — fan-out level below TXV
-
-    if num_modules == 1:
+    # ── Mode: door vs modular ────────────────────────────────────────────
+    if mode == 'door':
+        EVAP_W     = 240 * num_doors
+        num_modules = 1
         mod_xs  = [CENTER_X]
         mod_lbs = ['']
-    elif num_modules == 2:
-        mod_xs  = [CENTER_X - MOD_SPACING // 2, CENTER_X + MOD_SPACING // 2]
-        mod_lbs = ['Left', 'Right']
     else:
-        mod_xs  = [CENTER_X - MOD_SPACING, CENTER_X, CENTER_X + MOD_SPACING]
-        mod_lbs = ['Left', 'Center', 'Right']
+        EVAP_W     = 240
+        num_modules = max(1, min(3, int(topo.get('modules', 1) or 1)))
+        if num_modules == 1:
+            mod_xs  = [CENTER_X];  mod_lbs = ['']
+        elif num_modules == 2:
+            mod_xs  = [CENTER_X - MOD_SPACING // 2, CENTER_X + MOD_SPACING // 2]
+            mod_lbs = ['Left', 'Right']
+        else:
+            mod_xs  = [CENTER_X - MOD_SPACING, CENTER_X, CENTER_X + MOD_SPACING]
+            mod_lbs = ['Left', 'Center', 'Right']
 
-    LEFTMOST = mod_xs[0] - 200
+    LEFTMOST = mod_xs[0] - EVAP_W // 2 - 100
+
+    # Circuit port x-positions (no snap, exact even spacing across EVAP_W)
+    ckt_spacing   = (EVAP_W / (num_circuits - 1)) if num_circuits > 1 else EVAP_W
+    ckt_local_xs  = _circuit_xs(num_circuits, EVAP_W, spacing=ckt_spacing)
 
     components: dict = {}
-    pipes: dict = {}
+    pipes:      dict = {}
 
     # ── Compressor ────────────────────────────────────────────────────────
     components['comp'] = {
@@ -340,44 +349,33 @@ def build_bare_minimum_diagram(request: dict) -> dict:
         'route': [[CENTER_X, Y_COMP + COMP_H], [CENTER_X, Y_COND]],
     }
 
-    cond_out = [CENTER_X, Y_COND + COND_H]
+    cond_out_y = Y_COND + COND_H
 
-    # Port spacing that makes circuits span the full evaporator width (edge to edge).
-    # For 1 circuit: centered (spacing irrelevant). For N>1: EVAP_W/(N-1).
-    ckt_spacing = (EVAP_W / (num_circuits - 1)) if num_circuits > 1 else EVAP_W
-    ckt_local_xs = _circuit_xs(num_circuits, EVAP_W, spacing=ckt_spacing)
-
-    # ── Multi-module collector — created before module loop so circuit pipes can reference it ──
+    # ── Multi-module invisible junction (n > 1 only) ──────────────────────
     if num_modules > 1:
-        multi_w      = (num_modules - 1) * MOD_SPACING + EVAP_W
-        multi_left   = CENTER_X - multi_w // 2
-        Y_MULTI      = CKT_OUT_Y + 35          # matches test_loop MERGE_Y spacing
-        multi_out_lx = _snap(multi_w / 2)
-        multi_out_sx = multi_left + multi_out_lx
-        lb_y         = Y_MULTI                  # height=1 so inlet==outlet y-pos
-
-        # Single inlet at CENTER_X — all module pipes share it and include horizontal leg.
+        multi_w    = (num_modules - 1) * MOD_SPACING + EVAP_W
+        multi_left = CENTER_X - multi_w // 2
         components['multi_suct'] = {
             'type': 'Junction',
-            'position': [multi_left, Y_MULTI],
+            'position': [multi_left, MERGE_Y],
             'size': {'width': multi_w, 'height': 1},
             'properties': {
-                'inlet_count':  1,
-                'outlet_count': 1,
-                'port_spacing': 20,
-                'snapped_mode': 'Yes',
+                'inlet_count':  1, 'outlet_count': 1,
+                'port_spacing': 20, 'snapped_mode': 'Yes',
                 'circuit_label': 'None',
             },
         }
 
-    # ── Per-module components ──────────────────────────────────────────────
-    for mi, (mod_x, lb) in enumerate(zip(mod_xs, mod_lbs), 1):
+    # ── Per-module ────────────────────────────────────────────────────────
+    for mod_x, lb in zip(mod_xs, mod_lbs):
         cl  = lb if lb else 'None'
-        pfx = lb.lower() + '_' if lb else ''
+        pfx = lb.lower().replace(' ', '_') + '_' if lb else ''
+        evap_left = mod_x - EVAP_W // 2
 
         txv_id  = f'{pfx}txv'
+        dist_id = f'{pfx}dist'
         evap_id = f'{pfx}evap'
-        evap_left = mod_x - EVAP_W // 2
+        head_id = f'{pfx}head'
 
         # TXV
         components[txv_id] = {
@@ -387,7 +385,15 @@ def build_bare_minimum_diagram(request: dict) -> dict:
             'properties': {'circuit_label': cl},
         }
 
-        # Evaporator (N inlets top / N outlets bottom via dynamic_ports)
+        # Distributor — SplitterManifold above evap
+        components[dist_id] = {
+            'type': 'SplitterManifold',
+            'position': [evap_left, DIST_Y],
+            'size': {'width': EVAP_W, 'height': DIST_H},
+            'properties': {'circuits': num_circuits, 'circuit_label': cl},
+        }
+
+        # Evaporator
         components[evap_id] = {
             'type': 'Evaporator',
             'position': [evap_left, Y_EVAP],
@@ -399,118 +405,264 @@ def build_bare_minimum_diagram(request: dict) -> dict:
             },
         }
 
-        # Single-module only: invisible suction junction that feeds the loopback pipe.
-        if num_modules == 1:
-            suct_id = 'suct'
-            components[suct_id] = {
-                'type': 'Junction',
-                'position': [mod_x - 20, CKT_OUT_Y],
-                'size': {'width': 40, 'height': 1},
-                'properties': {
-                    'inlet_count':  1,
-                    'outlet_count': 1,
-                    'port_spacing': 20,
-                    'snapped_mode': 'Yes',
-                    'circuit_label': cl,
-                },
-            }
+        # Header — CombinerManifold below evap
+        components[head_id] = {
+            'type': 'CombinerManifold',
+            'position': [evap_left, HEAD_Y],
+            'size': {'width': EVAP_W, 'height': HEAD_H},
+            'properties': {'circuits': num_circuits, 'circuit_label': cl},
+        }
 
-        # cond → TXV: branch at BRANCH_Y then drop to module x
+        # cond → TXV (branch at BRANCH_Y, drop to mod_x)
         pipes[f'p_cond_{txv_id}'] = {
-            'start_component_id': 'cond',   'start_port': 'outlet',
-            'end_component_id':   txv_id,   'end_port':   'inlet',
-            'route': [cond_out,
+            'start_component_id': 'cond', 'start_port': 'outlet',
+            'end_component_id':   txv_id, 'end_port':   'inlet',
+            'route': [[CENTER_X, cond_out_y],
                       [CENTER_X, BRANCH_Y],
                       [mod_x,    BRANCH_Y],
                       [mod_x,    Y_TXV]],
         }
 
-        txv_out = [mod_x, Y_TXV + TXV_H]
-
-        # TXV → each evap circuit inlet: fan-out at CKT_IN_Y
-        for i, lx in enumerate(ckt_local_xs, 1):
-            cx = int(evap_left + lx)
-            pipes[f'p_{txv_id}_ckt{i}'] = {
+        # TXV → distributor inlet (direct vertical; may be zero-length if coincident)
+        txv_out_y = Y_TXV + TXV_H
+        if txv_out_y < DIST_Y:
+            pipes[f'p_{txv_id}_{dist_id}'] = {
                 'start_component_id': txv_id,  'start_port': 'outlet',
-                'end_component_id':   evap_id, 'end_port':   f'inlet_circuit_{i}',
-                'route': [txv_out,
-                          [mod_x, CKT_IN_Y],
-                          [cx,    CKT_IN_Y],
-                          [cx,    Y_EVAP]],
+                'end_component_id':   dist_id, 'end_port':   'inlet',
+                'route': [[mod_x, txv_out_y], [mod_x, DIST_Y]],
             }
 
-        # Evap circuit outlet → collection point (test_loop fan-in pattern):
-        #   down to CKT_OUT_Y → horizontal to mod_x → [down to multi junction for n>1]
+        # Header outlet → suction
         if num_modules == 1:
-            # All circuits share the single suction junction inlet_1
-            for i, lx in enumerate(ckt_local_xs, 1):
-                cx = int(evap_left + lx)
-                pipes[f'p_ckt{i}_{evap_id}_suct'] = {
-                    'start_component_id': evap_id, 'start_port': f'outlet_circuit_{i}',
-                    'end_component_id':   suct_id, 'end_port':   'inlet_1',
-                    'route': [[cx, Y_EVAP + EVAP_H], [cx, CKT_OUT_Y], [mod_x, CKT_OUT_Y]],
-                }
-        else:
-            # Per-module collector: 1-inlet/1-outlet (same pattern as single-module
-            # suct which works). All circuits share inlet_1 → horizontal bar renders
-            # from the explicit route waypoints. Then one pipe to multi_suct.
-            mod_suct_id = f'{pfx}mod_suct'
-            components[mod_suct_id] = {
-                'type': 'Junction',
-                'position': [mod_x - 20, CKT_OUT_Y],
-                'size': {'width': 40, 'height': 1},
-                'properties': {
-                    'inlet_count':  1,
-                    'outlet_count': 1,
-                    'port_spacing': 20,
-                    'snapped_mode': 'Yes',
-                    'circuit_label': cl,
-                },
+            pipes['p_loopback'] = {
+                'start_component_id': head_id, 'start_port': 'outlet',
+                'end_component_id':   'comp',  'end_port':   'inlet',
+                'route': [[mod_x,    HEAD_OUT_Y],
+                          [mod_x,    MERGE_Y],
+                          [LEFTMOST, MERGE_Y],
+                          [LEFTMOST, Y_COMP - 30],
+                          [CENTER_X, Y_COMP - 30],
+                          [CENTER_X, Y_COMP]],
             }
-            for i, lx in enumerate(ckt_local_xs, 1):
-                cx = int(evap_left + lx)
-                pipes[f'p_ckt{i}_{evap_id}_modsct'] = {
-                    'start_component_id': evap_id,     'start_port': f'outlet_circuit_{i}',
-                    'end_component_id':   mod_suct_id, 'end_port':   'inlet_1',
-                    'route': [[cx, Y_EVAP + EVAP_H], [cx, CKT_OUT_Y], [mod_x, CKT_OUT_Y]],
-                }
-            # All modules share multi_suct.inlet_1 at (CENTER_X, Y_MULTI).
-            # Route: down to Y_MULTI then horizontal to CENTER_X (matches test_loop branch).
-            pipes[f'p_{mod_suct_id}_multi'] = {
-                'start_component_id': mod_suct_id,  'start_port': 'outlet_1',
+        else:
+            pipes[f'p_{head_id}_multi'] = {
+                'start_component_id': head_id,      'start_port': 'outlet',
                 'end_component_id':   'multi_suct', 'end_port':   'inlet_1',
-                'route': [[mod_x, CKT_OUT_Y], [mod_x, Y_MULTI], [CENTER_X, Y_MULTI]],
+                'route': [[mod_x, HEAD_OUT_Y], [mod_x, MERGE_Y], [CENTER_X, MERGE_Y]],
             }
 
-    # ── Loopback ──────────────────────────────────────────────────────────
-    if num_modules == 1:
-        sy = CKT_OUT_Y
+    # ── Multi-module loopback ─────────────────────────────────────────────
+    if num_modules > 1:
         pipes['p_loopback'] = {
-            'start_component_id': 'suct', 'start_port': 'outlet_1',
-            'end_component_id':   'comp', 'end_port':   'inlet',
-            'route': [[CENTER_X, sy],
-                      [CENTER_X, sy + 30],
-                      [LEFTMOST, sy + 30],
+            'start_component_id': 'multi_suct', 'start_port': 'outlet_1',
+            'end_component_id':   'comp',        'end_port':   'inlet',
+            'route': [[CENTER_X, MERGE_Y],
+                      [CENTER_X, MERGE_Y + 30],
+                      [LEFTMOST, MERGE_Y + 30],
                       [LEFTMOST, Y_COMP - 30],
                       [CENTER_X, Y_COMP - 30],
                       [CENTER_X, Y_COMP]],
         }
+
+    # ── Decorative sections ───────────────────────────────────────────────
+    left_edge  = mod_xs[0]  - EVAP_W / 2
+    right_edge = mod_xs[-1] + EVAP_W / 2
+    combined_w = right_edge - left_edge
+
+    # Airflow
+    base_y = MERGE_Y + 100
+    components['deco_pri_air'] = {
+        'type': 'DecorativeRect',
+        'position': [left_edge, base_y],
+        'size': {'width': combined_w, 'height': 30},
+        'properties': {'bg_color': '#B3E5FC', 'label': 'Primary Discharge Air'},
+    }
+    components['deco_sec_air'] = {
+        'type': 'DecorativeRect',
+        'position': [left_edge, base_y + 40],
+        'size': {'width': combined_w, 'height': 30},
+        'properties': {'bg_color': '#FFF9C4', 'label': 'Secondary Discharge Air'},
+    }
+
+    fan_y    = base_y + 80
+    fan_size = 60
+    if mode == 'door':
+        slice_w = combined_w / num_doors
+        for i in range(num_doors):
+            fx = left_edge + (slice_w / 2) + (i * slice_w)
+            components[f'deco_fan_{i+1}'] = {
+                'type': 'DecorativeRect',
+                'position': [fx - fan_size / 2, fan_y],
+                'size': {'width': fan_size, 'height': fan_size},
+                'properties': {'bg_color': '#E0E0E0', 'label': f'Fan Dr {i+1}'},
+            }
     else:
-        pipes['p_loopback'] = {
-            'start_component_id': 'multi_suct', 'start_port': 'outlet_1',
-            'end_component_id':   'comp',        'end_port':   'inlet',
-            'route': [[multi_out_sx, lb_y],
-                      [multi_out_sx, lb_y + 30],
-                      [LEFTMOST,     lb_y + 30],
-                      [LEFTMOST,     Y_COMP - 30],
-                      [CENTER_X,     Y_COMP - 30],
-                      [CENTER_X,     Y_COMP]],
+        for mx, lb in zip(mod_xs, mod_lbs):
+            fname = f'Fan {lb}'.strip() if lb else 'Fan'
+            fkey  = lb.lower().replace(' ', '_') if lb else 'ctr'
+            components[f'deco_fan_{fkey}'] = {
+                'type': 'DecorativeRect',
+                'position': [mx - fan_size / 2, fan_y],
+                'size': {'width': fan_size, 'height': fan_size},
+                'properties': {'bg_color': '#E0E0E0', 'label': fname},
+            }
+
+    ret_air_y = fan_y + fan_size + 10
+    components['deco_ret_air'] = {
+        'type': 'DecorativeRect',
+        'position': [left_edge, ret_air_y],
+        'size': {'width': combined_w, 'height': 30},
+        'properties': {'bg_color': '#FFCDD2', 'label': 'Return Air'},
+    }
+
+    # Shelving
+    shelf_base_y  = ret_air_y + 30 + 100
+    shelf_height  = 30
+    shelf_gap     = 10
+    shelf_total_h = shelf_rows * (shelf_height + shelf_gap)
+
+    if mode == 'door':
+        col_w  = combined_w / num_doors
+        col_xs = [left_edge + i * col_w for i in range(num_doors)]
+    else:
+        col_w  = EVAP_W
+        col_xs = [mx - EVAP_W / 2 for mx in mod_xs]
+
+    for ci, cx in enumerate(col_xs):
+        for r in range(shelf_rows):
+            sy = shelf_base_y + r * (shelf_height + shelf_gap)
+            components[f'deco_shelf_{ci}_{r}'] = {
+                'type': 'DecorativeRect',
+                'position': [cx + 3, sy],
+                'size': {'width': col_w - 6, 'height': shelf_height},
+                'properties': {'bg_color': '#F0F0F0', 'label': f'Shelf {r+1}'},
+            }
+
+    # Doors
+    if case_type == 'Doored':
+        door_base_y = shelf_base_y + shelf_total_h + 80
+        door_height = 240
+        mullion_w   = 16
+
+        if mode != 'door':
+            # Modular: end mullions + 2 doors per module + center mullions between modules
+            M = len(mod_xs)
+            components['deco_mull_lh'] = {
+                'type': 'DecorativeRect',
+                'position': [left_edge - mullion_w - 10, door_base_y],
+                'size': {'width': mullion_w, 'height': door_height},
+                'properties': {'bg_color': '#B0BEC5', 'label': ''},
+            }
+            components['deco_mull_rh'] = {
+                'type': 'DecorativeRect',
+                'position': [right_edge + 10, door_base_y],
+                'size': {'width': mullion_w, 'height': door_height},
+                'properties': {'bg_color': '#B0BEC5', 'label': ''},
+            }
+            door_w = EVAP_W / 2 - 2
+            for m, mx in enumerate(mod_xs):
+                components[f'deco_door_{2*m+1}'] = {
+                    'type': 'DecorativeRect',
+                    'position': [mx - EVAP_W / 2, door_base_y],
+                    'size': {'width': door_w, 'height': door_height},
+                    'properties': {'bg_color': '#E1F5FE', 'label': f'Door {2*m+1}'},
+                }
+                components[f'deco_door_{2*m+2}'] = {
+                    'type': 'DecorativeRect',
+                    'position': [mx + 2, door_base_y],
+                    'size': {'width': door_w, 'height': door_height},
+                    'properties': {'bg_color': '#E1F5FE', 'label': f'Door {2*m+2}'},
+                }
+                if m < M - 1:
+                    ctr_x = (mod_xs[m] + mod_xs[m + 1]) / 2
+                    components[f'deco_mull_ctr_{m}'] = {
+                        'type': 'DecorativeRect',
+                        'position': [ctr_x - mullion_w / 2, door_base_y],
+                        'size': {'width': mullion_w, 'height': door_height},
+                        'properties': {'bg_color': '#B0BEC5', 'label': ''},
+                    }
+        else:
+            # Door mode: end mullions + N doors with mullions between
+            N   = num_doors
+            gap = 4
+            total_mull_w = (N + 1) * mullion_w
+            total_gap_w  = (2 * N) * gap
+            door_w = (combined_w - total_mull_w - total_gap_w) / N
+            cx = left_edge
+            components['deco_mull_lh'] = {
+                'type': 'DecorativeRect',
+                'position': [cx, door_base_y],
+                'size': {'width': mullion_w, 'height': door_height},
+                'properties': {'bg_color': '#B0BEC5', 'label': ''},
+            }
+            cx += mullion_w + gap
+            for i in range(N):
+                components[f'deco_door_{i+1}'] = {
+                    'type': 'DecorativeRect',
+                    'position': [cx, door_base_y],
+                    'size': {'width': door_w, 'height': door_height},
+                    'properties': {'bg_color': '#E1F5FE', 'label': f'Door {i+1}'},
+                }
+                cx += door_w + gap
+                if i < N - 1:
+                    components[f'deco_mull_ctr_{i}'] = {
+                        'type': 'DecorativeRect',
+                        'position': [cx, door_base_y],
+                        'size': {'width': mullion_w, 'height': door_height},
+                        'properties': {'bg_color': '#B0BEC5', 'label': ''},
+                    }
+                    cx += mullion_w + gap
+            components['deco_mull_rh'] = {
+                'type': 'DecorativeRect',
+                'position': [cx, door_base_y],
+                'size': {'width': mullion_w, 'height': door_height},
+                'properties': {'bg_color': '#B0BEC5', 'label': ''},
+            }
+    else:
+        door_base_y  = shelf_base_y + shelf_total_h + 80
+        door_height  = 0
+
+    # Boundaries
+    process_x = LEFTMOST - 40
+    process_w = (right_edge + 40) - process_x
+    process_y = Y_COMP - 80
+    process_h = MERGE_Y + 40 - process_y
+    components['bnd_process'] = {
+        'type': 'Boundary',
+        'position': [process_x, process_y],
+        'size': {'width': process_w, 'height': process_h},
+        'properties': {'label': 'Refrigeration Process', 'stroke_color': '#AAAAAA'},
+    }
+
+    air_y = base_y - 40
+    air_h = (ret_air_y + 30 + 40) - air_y
+    components['bnd_air'] = {
+        'type': 'Boundary',
+        'position': [process_x, air_y],
+        'size': {'width': process_w, 'height': air_h},
+        'properties': {'label': 'Airflow Diagram', 'stroke_color': '#AAAAAA'},
+    }
+
+    components['bnd_shelf'] = {
+        'type': 'Boundary',
+        'position': [process_x, shelf_base_y - 40],
+        'size': {'width': process_w, 'height': shelf_total_h + 60},
+        'properties': {'label': 'Shelving Diagram', 'stroke_color': '#AAAAAA'},
+    }
+
+    if case_type == 'Doored' and door_height > 0:
+        components['bnd_doors'] = {
+            'type': 'Boundary',
+            'position': [process_x, door_base_y - 40],
+            'size': {'width': process_w, 'height': door_height + 60},
+            'properties': {'label': 'Doors Diagram', 'stroke_color': '#AAAAAA'},
         }
 
+    # ── Tag all components and pipes ──────────────────────────────────────
     for p in pipes.values():
         p['_simple_mode'] = True
         p['route_locked'] = True
-        p['_raw_route']   = True   # bypass _pin_end, _sanitize, port_inset trim
+        p['_raw_route']   = True
 
     for c in components.values():
         c['_simple_mode'] = True
@@ -522,6 +674,6 @@ def build_bare_minimum_diagram(request: dict) -> dict:
         'custom_sensors':  {},
         'role_dot_labels': {},
         '_simple_mode': True,
-        '_generated_from': (f'bare_minimum ({num_modules} module(s), '
+        '_generated_from': (f'bare_minimum ({mode}, {num_modules} module(s), '
                             f'{num_circuits} circuits/module)'),
     }

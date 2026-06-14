@@ -97,6 +97,33 @@ class BaseComponentItem(QGraphicsRectItem):
                 self.label.hide()
             for port in self.ports.values():
                 port.hide()
+
+        # Simple-mode manifolds: hide ports (stubs drawn by the item itself)
+        if simple and component_data.get('type') in ('SplitterManifold', 'CombinerManifold'):
+            for port in self.ports.values():
+                port.hide()
+
+        # Decorative rect — colored box with label, no ports, behind refrigerant items
+        if component_data.get('type') == 'DecorativeRect':
+            props = component_data.get('properties', {})
+            self.setBrush(QBrush(QColor(props.get('bg_color', '#E0E0E0'))))
+            self.setPen(QPen(QColor('#000000'), 1))
+            self.label.setPlainText(props.get('label', ''))
+            self.label.setDefaultTextColor(QColor(props.get('text_color', '#000000')))
+            self.label.setPos(5, 5)
+            self.setZValue(-5)
+
+        # Boundary — dashed rect outline with label, furthest behind
+        elif component_data.get('type') == 'Boundary':
+            props = component_data.get('properties', {})
+            self.setBrush(QBrush(Qt.GlobalColor.transparent))
+            _bpen = QPen(QColor(props.get('stroke_color', '#AAAAAA')), 2)
+            _bpen.setStyle(Qt.PenStyle.DashLine)
+            self.setPen(_bpen)
+            self.label.setPlainText(props.get('label', ''))
+            self.label.setDefaultTextColor(QColor('#888888'))
+            self.label.setPos(5, 5)
+            self.setZValue(-10)
     
     def _legacy_paint(self, painter, option, widget=None):
         """Standard paint with no custom shapes."""
