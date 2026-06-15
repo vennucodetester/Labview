@@ -18,9 +18,14 @@ class SimpleBox(QGraphicsPathItem):
         self.setBrush(QBrush(QColor('#222222')))
         self.setPen(QPen(QColor('#4DA6FF'), 2))
         
-        self.text = QGraphicsTextItem(f'[{title}]', self)
-        self.text.setDefaultTextColor(QColor('#FFFFFF'))
-        self.text.setPos(10, 10)
+        self.text = QGraphicsTextItem(self)
+        title_html = title.replace('\n', '<br>')
+        self.text.setHtml(f"<div align='center' style='color: white; font-family: sans-serif; font-size: 10pt;'>{title_html}</div>")
+        self.text.setTextWidth(width)
+        
+        rect = self.text.boundingRect()
+        y_pos = (height - rect.height()) / 2
+        self.text.setPos(0, y_pos)
         
         self.inlet_pos = QPointF(width/2, 0) if has_in else None
         self.outlet_pos = QPointF(width/2, height) if has_out else None
@@ -44,9 +49,14 @@ class ColoredBox(QGraphicsPathItem):
         self.setPath(path)
         self.setBrush(QBrush(QColor(bg_color)))
         self.setPen(QPen(QColor('#000000'), 1))
-        self.text = QGraphicsTextItem(f'{title}', self)
-        self.text.setDefaultTextColor(QColor('#000000'))
-        self.text.setPos(5, 5)
+        self.text = QGraphicsTextItem(self)
+        title_html = title.replace('\n', '<br>')
+        self.text.setHtml(f"<div align='center' style='color: black; font-family: sans-serif; font-size: 10pt;'>{title_html}</div>")
+        self.text.setTextWidth(width)
+        
+        rect = self.text.boundingRect()
+        y_pos = (height - rect.height()) / 2
+        self.text.setPos(0, y_pos)
 
 class SplitterManifold(QGraphicsPathItem):
     def __init__(self, num_splits=6, width=120, height=40, is_reversed=False):
@@ -137,9 +147,14 @@ class EvaporatorBox(QGraphicsPathItem):
         self.setBrush(QBrush(QColor('#222222')))
         self.setPen(QPen(QColor('#4DA6FF'), 2))
         
-        self.text = QGraphicsTextItem(f'[{title}]', self)
-        self.text.setDefaultTextColor(QColor('#FFFFFF'))
-        self.text.setPos(10, 10)
+        self.text = QGraphicsTextItem(self)
+        title_html = title.replace('\n', '<br>')
+        self.text.setHtml(f"<div align='center' style='color: white; font-family: sans-serif; font-size: 10pt;'>{title_html}</div>")
+        self.text.setTextWidth(width)
+        
+        rect = self.text.boundingRect()
+        y_pos = (height - rect.height()) / 2
+        self.text.setPos(0, y_pos)
         
         self.inlet_positions = []
         self.outlet_positions = []
@@ -275,51 +290,47 @@ class TestWindow(QMainWindow):
         self.setCentralWidget(main_widget)
         layout = QVBoxLayout(main_widget)
         
-        # Toolbar 1: Modular
-        btn_layout_mod = QHBoxLayout()
-        btn_layout_mod.addWidget(QLabel("Modular:"))
-        for i in range(1, 4):
-            btn = QPushButton(f"{i} Module{'s' if i>1 else ''}")
-            btn.clicked.connect(lambda checked, n=i: self.set_mode('modular', n))
-            btn_layout_mod.addWidget(btn)
-        btn_layout_mod.addStretch()
-
-        # Toolbar 2: Non-Modular (Doors)
-        btn_layout_door = QHBoxLayout()
-        btn_layout_door.addWidget(QLabel("Non-Modular (Doors):"))
-        for i in range(1, 6):
-            btn = QPushButton(f"{i}Dr")
-            btn.clicked.connect(lambda checked, n=i: self.set_mode('door', n))
-            btn_layout_door.addWidget(btn)
+        # Single Unified Toolbar
+        toolbar = QHBoxLayout()
         
-        btn_layout_door.addSpacing(40)
-        btn_layout_door.addWidget(QLabel("Circuits:"))
+        toolbar.addWidget(QLabel("Mode:"))
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["Modular", "Non-Modular (Doors)", "Cassette MT", "Cassette LT"])
+        self.mode_combo.currentTextChanged.connect(self.on_mode_changed)
+        toolbar.addWidget(self.mode_combo)
         
+        toolbar.addSpacing(20)
+        toolbar.addWidget(QLabel("Count:"))
+        self.count_combo = QComboBox()
+        self.count_combo.currentTextChanged.connect(self.update_diagram)
+        toolbar.addWidget(self.count_combo)
+        
+        toolbar.addSpacing(20)
+        self.circuit_label = QLabel("Circuits:")
+        toolbar.addWidget(self.circuit_label)
         self.circuit_spin = QSpinBox()
         self.circuit_spin.setRange(1, 8)
         self.circuit_spin.setValue(6)
         self.circuit_spin.valueChanged.connect(self.update_diagram)
-        btn_layout_door.addWidget(self.circuit_spin)
+        toolbar.addWidget(self.circuit_spin)
         
-        btn_layout_door.addSpacing(40)
-        btn_layout_door.addWidget(QLabel("Shelf Rows:"))
+        toolbar.addSpacing(20)
+        toolbar.addWidget(QLabel("Shelf Rows:"))
         self.shelf_spin = QSpinBox()
         self.shelf_spin.setRange(3, 8)
         self.shelf_spin.setValue(5)
         self.shelf_spin.valueChanged.connect(self.update_diagram)
-        btn_layout_door.addWidget(self.shelf_spin)
+        toolbar.addWidget(self.shelf_spin)
         
-        btn_layout_door.addSpacing(40)
-        btn_layout_door.addWidget(QLabel("Case Type:"))
+        toolbar.addSpacing(20)
+        toolbar.addWidget(QLabel("Case Type:"))
         self.case_combo = QComboBox()
         self.case_combo.addItems(["Doored", "Open"])
         self.case_combo.currentTextChanged.connect(self.update_diagram)
-        btn_layout_door.addWidget(self.case_combo)
+        toolbar.addWidget(self.case_combo)
         
-        btn_layout_door.addStretch()
-        
-        layout.addLayout(btn_layout_mod)
-        layout.addLayout(btn_layout_door)
+        toolbar.addStretch()
+        layout.addLayout(toolbar)
         
         self.view = QGraphicsView()
         self.scene = QGraphicsScene()
@@ -327,15 +338,43 @@ class TestWindow(QMainWindow):
         self.view.setScene(self.scene)
         layout.addWidget(self.view)
         
-        self.update_diagram()
+        self.on_mode_changed()
 
-    def set_mode(self, mode, count):
-        self.current_mode = mode
-        self.current_count = count
+    def on_mode_changed(self):
+        mode = self.mode_combo.currentText()
+        self.count_combo.blockSignals(True)
+        self.count_combo.clear()
+        
+        if mode == "Modular":
+            self.count_combo.addItems(["1 Module", "2 Modules", "3 Modules"])
+            self.count_combo.setCurrentIndex(2) # Default 3
+            self.circuit_spin.setEnabled(True)
+        else:
+            self.count_combo.addItems(["1 Door", "2 Doors", "3 Doors", "4 Doors", "5 Doors"])
+            self.count_combo.setCurrentIndex(4) # Default 5
+            
+            if mode.startswith("Cassette"):
+                self.circuit_spin.setEnabled(False)
+            else:
+                self.circuit_spin.setEnabled(True)
+                
+        self.count_combo.blockSignals(False)
         self.update_diagram()
 
     def update_diagram(self):
         self.scene.clear()
+        
+        mode_text = self.mode_combo.currentText()
+        if mode_text == "Modular":
+            self.current_mode = 'modular'
+        elif mode_text == "Non-Modular (Doors)":
+            self.current_mode = 'door'
+        elif mode_text == "Cassette MT":
+            self.current_mode = 'cassette_mt'
+        else:
+            self.current_mode = 'cassette_lt'
+            
+        self.current_count = self.count_combo.currentIndex() + 1
 
         num_modules = self.current_count if self.current_mode == 'modular' else 1
         CENTER_X = 600
@@ -343,18 +382,18 @@ class TestWindow(QMainWindow):
 
         # ── Fixed y positions ────────────────────────────────────────────────
         Y_COMP  = 100   # compressor top
-        Y_COND  = 200   # condenser top
-        Y_TXV   = 330   # TXV top  (one per module)
-        Y_EVAP  = 445   # Evaporator top (one per module)
+        Y_COND  = 190   # condenser top
+        Y_TXV   = 350   # TXV top  (one per module)
+        Y_EVAP  = 495   # Evaporator top (one per module)
         EVAP_H  = 80
         COMP_W  = 120;  COMP_H  = 60
         COND_W  = 120;  COND_H  = 60
         TXV_W   = 120;  TXV_H   = 60
+        num_circuits = self.circuit_spin.value()
         EVAP_W  = 240
         if self.current_mode == 'door':
             EVAP_W = 240 * self.current_count
 
-        # module x-centres
         if num_modules == 1:
             mod_xs  = [CENTER_X]
             mod_lbs = [""]
@@ -364,99 +403,272 @@ class TestWindow(QMainWindow):
         else:
             mod_xs  = [CENTER_X - MOD_SPACING, CENTER_X, CENTER_X + MOD_SPACING]
             mod_lbs = ["LH", "CTR", "RH"]
+        
+        # ── Compute Case Dimensions ──────────────────────────────────────────
+        if self.current_mode == 'modular':
+            total_w = num_modules * EVAP_W + (num_modules - 1) * (MOD_SPACING - EVAP_W)
+            left_edge = mod_xs[0] - EVAP_W / 2
+            right_edge = mod_xs[-1] + EVAP_W / 2
+            combined_w = total_w
+        else: # door or cassette
+            total_w = 240 * self.current_count
+            left_edge = CENTER_X - total_w / 2
+            right_edge = CENTER_X + total_w / 2
+            combined_w = total_w
+            
+        process_x = left_edge - 200
+        process_w = combined_w + 300
 
-        LEFTMOST = mod_xs[0] - (EVAP_W // 2) - 100   # loopback clearance lane
-
-        # ── Shared boxes ─────────────────────────────────────────────────────
-        comp = SimpleBox("Compressor", width=COMP_W, height=COMP_H)
-        comp.setPos(CENTER_X - COMP_W // 2, Y_COMP)
-        self.scene.addItem(comp)
-
-        cond = SimpleBox("Condenser", width=COND_W, height=COND_H)
-        cond.setPos(CENTER_X - COND_W // 2, Y_COND)
-        self.scene.addItem(cond)
-
-        # comp → cond  (straight vertical)
-        draw_pipe(self.scene,
-                  comp.scenePos() + comp.outlet_pos,
-                  cond.scenePos() + cond.inlet_pos)
-
-        # cond outlet scene point
-        cond_out = cond.scenePos() + cond.outlet_pos   # (CENTER_X, Y_COND+COND_H)
-
-        num_circuits = self.circuit_spin.value()
-
-        # branch / merge levels (where multi-module pipes fan out / collect)
-        BRANCH_Y   = Y_COND + COND_H + 30      # module fan-out below condenser
-        MERGE_Y    = Y_EVAP + EVAP_H + 85      # module collection before loopback
-
-        # ── Per-module columns ───────────────────────────────────────────────
-        mod_evap_outlets = []
-
-        for mod_x, lb in zip(mod_xs, mod_lbs):
-            lp = f"{lb} " if lb else ""
-
-            txv = SimpleBox(f"{lp}TXV", width=TXV_W, height=TXV_H)
-            txv.setPos(mod_x - TXV_W // 2, Y_TXV)
-            self.scene.addItem(txv)
-
-            evap = EvaporatorBox(f"{lp}Evaporator",
-                                 num_circuits=num_circuits,
-                                 width=EVAP_W, height=EVAP_H)
-            evap.setPos(mod_x - EVAP_W // 2, Y_EVAP)
-            self.scene.addItem(evap)
-
-            dist_h = 40
-            dist = SplitterManifold(num_splits=num_circuits, width=EVAP_W, height=dist_h, is_reversed=False)
-            dist.setPos(mod_x - EVAP_W // 2, Y_EVAP - dist_h - 15)
-            self.scene.addItem(dist)
-
-            head_h = 40
-            head = SplitterManifold(num_splits=num_circuits, width=EVAP_W, height=head_h, is_reversed=True)
-            head.setPos(mod_x - EVAP_W // 2, Y_EVAP + EVAP_H)
-            self.scene.addItem(head)
-
-            txv_in  = txv.scenePos() + txv.inlet_pos
-            txv_out = txv.scenePos() + txv.outlet_pos
-
-            # cond → TXV  (branch at BRANCH_Y then drop to module x)
-            _draw_branch_pipe(self.scene, cond_out, txv_in, BRANCH_Y)
-
-            # bottom header outlet → module merge point
-            head_out = head.scenePos() + head.outlet_pos
-            mod_evap_outlets.append(head_out)
-
-        # ── Collect module outlets and loopback ──────────────────────────────
-        merge_pt = QPointF(CENTER_X, MERGE_Y)
-
-        for evap_out in mod_evap_outlets:
-            _draw_branch_pipe(self.scene, evap_out, merge_pt, MERGE_Y)
-
-        draw_loopback_pipe(self.scene,
-                           merge_pt,
-                           comp.scenePos() + comp.inlet_pos,
-                           LEFTMOST)
-
-        # ── Air Distribution & Fans ──────────────────────────────────────────
-        left_edge = mod_xs[0] - EVAP_W / 2
-        right_edge = mod_xs[-1] + EVAP_W / 2
-        combined_w = right_edge - left_edge
+        if not self.current_mode.startswith('cassette'):
+            LEFTMOST = left_edge - 100
+            
+            # ── Shared boxes ─────────────────────────────────────────────────────
+            comp = SimpleBox("Compressor", width=COMP_W, height=COMP_H)
+            comp.setPos(CENTER_X - COMP_W // 2, Y_COMP)
+            self.scene.addItem(comp)
+    
+            cond = SimpleBox("Condenser", width=COND_W, height=COND_H)
+            cond.setPos(CENTER_X - COND_W // 2, Y_COND)
+            self.scene.addItem(cond)
+    
+            draw_pipe(self.scene, comp.scenePos() + comp.outlet_pos, cond.scenePos() + cond.inlet_pos)
+            cond_out = cond.scenePos() + cond.outlet_pos
+    
+            BRANCH_Y   = Y_COND + COND_H + 30
+            MERGE_Y    = Y_EVAP + EVAP_H + 85
+    
+            mod_evap_outlets = []
+            for mod_x, lb in zip(mod_xs, mod_lbs):
+                lp = f"{lb} " if lb else ""
+    
+                txv = SimpleBox(f"{lp}TXV", width=TXV_W, height=TXV_H)
+                txv.setPos(mod_x - TXV_W // 2, Y_TXV)
+                self.scene.addItem(txv)
+    
+                evap = EvaporatorBox(f"{lp}Evaporator", num_circuits=num_circuits, width=EVAP_W, height=EVAP_H)
+                evap.setPos(mod_x - EVAP_W // 2, Y_EVAP)
+                self.scene.addItem(evap)
+    
+                dist_h = 40
+                dist = SplitterManifold(num_splits=num_circuits, width=EVAP_W, height=dist_h, is_reversed=False)
+                dist.setPos(mod_x - EVAP_W // 2, Y_EVAP - dist_h - 15)
+                self.scene.addItem(dist)
+    
+                head_h = 40
+                head = SplitterManifold(num_splits=num_circuits, width=EVAP_W, height=head_h, is_reversed=True)
+                head.setPos(mod_x - EVAP_W // 2, Y_EVAP + EVAP_H)
+                self.scene.addItem(head)
+    
+                txv_in  = txv.scenePos() + txv.inlet_pos
+                _draw_branch_pipe(self.scene, cond_out, txv_in, BRANCH_Y)
+    
+                head_out = head.scenePos() + head.outlet_pos
+                mod_evap_outlets.append(head_out)
+    
+            merge_pt = QPointF(CENTER_X, MERGE_Y)
+            for evap_out in mod_evap_outlets:
+                _draw_branch_pipe(self.scene, evap_out, merge_pt, MERGE_Y)
+    
+            draw_loopback_pipe(self.scene, merge_pt, comp.scenePos() + comp.inlet_pos, LEFTMOST)
+            _draw_boundary(self.scene, "Refrigeration Process", process_x, Y_COMP - 50, process_w, MERGE_Y - Y_COMP + 80)
+            
+        else:
+            # ── Cassette Mode ────────────────────────────────────────────────
+            if self.current_count in [1, 2]:
+                num_cassettes = 1
+                cas_lbs = [""]
+            elif self.current_count in [3, 4]:
+                num_cassettes = 2
+                cas_lbs = ["LH", "RH"]
+            else: # 5Dr
+                num_cassettes = 2 if self.current_mode == 'cassette_mt' else 3
+                cas_lbs = ["LH", "RH"] if num_cassettes == 2 else ["LH", "CTR", "RH"]
+                
+            cas_slice_w = combined_w / num_cassettes
+            cas_evap_w = cas_slice_w * 0.5
+            cas_xs = [left_edge + cas_slice_w / 2 + i * cas_slice_w for i in range(num_cassettes)]
+            
+            global_merge_y = Y_EVAP + EVAP_H + 85
+            
+            for cx, lb in zip(cas_xs, cas_lbs):
+                comp = SimpleBox("Compressor", width=COMP_W, height=COMP_H)
+                comp.setPos(cx - COMP_W // 2, Y_COMP)
+                self.scene.addItem(comp)
+                
+                if self.current_mode == 'cassette_mt':
+                    cond = SimpleBox("Condenser", width=COND_W, height=COND_H)
+                    cond.setPos(cx - COND_W // 2, Y_COND)
+                    self.scene.addItem(cond)
+                    
+                    txv = SimpleBox("TXV", width=TXV_W, height=TXV_H)
+                    txv.setPos(cx - TXV_W // 2, Y_TXV)
+                    self.scene.addItem(txv)
+                    
+                    evap = EvaporatorBox("Evaporator", num_circuits=1, width=cas_evap_w, height=EVAP_H)
+                    evap.setPos(cx - cas_evap_w // 2, Y_EVAP)
+                    self.scene.addItem(evap)
+                    
+                    comp_out = comp.scenePos() + comp.outlet_pos
+                    cond_in = cond.scenePos() + cond.inlet_pos
+                    cond_out = cond.scenePos() + cond.outlet_pos
+                    txv_in = txv.scenePos() + txv.inlet_pos
+                    
+                    draw_pipe(self.scene, comp_out, cond_in)
+                    draw_pipe(self.scene, cond_out, txv_in)
+                    
+                    dist_h = 40
+                    dist = SplitterManifold(num_splits=1, width=cas_evap_w, height=dist_h, is_reversed=False)
+                    dist.setPos(cx - cas_evap_w // 2, Y_EVAP - dist_h - 15)
+                    self.scene.addItem(dist)
+                    
+                    head_h = 40
+                    head = SplitterManifold(num_splits=1, width=cas_evap_w, height=head_h, is_reversed=True)
+                    head.setPos(cx - cas_evap_w // 2, Y_EVAP + EVAP_H)
+                    self.scene.addItem(head)
+                    
+                    head_out = head.scenePos() + head.outlet_pos
+                    comp_in = comp.scenePos() + comp.inlet_pos
+                    
+                    LEFTMOST_CAS = cx - max(cas_evap_w / 2 + 40, 100)
+                    draw_pipe(self.scene, head_out, QPointF(cx, global_merge_y))
+                    draw_pipe(self.scene, QPointF(cx, global_merge_y), QPointF(LEFTMOST_CAS, global_merge_y))
+                    draw_pipe(self.scene, QPointF(LEFTMOST_CAS, global_merge_y), QPointF(LEFTMOST_CAS, Y_COMP - 20))
+                    draw_pipe(self.scene, QPointF(LEFTMOST_CAS, Y_COMP - 20), QPointF(comp_in.x(), Y_COMP - 20))
+                    draw_pipe(self.scene, QPointF(comp_in.x(), Y_COMP - 20), comp_in)
+                    
+                    bound_left = cx - cas_evap_w/2 - 60
+                    bound_width = (cx + cas_evap_w/2 + 60) - bound_left
+                    
+                else: # LT Cassette
+                    bypass_w = 60
+                    bypass_y = Y_COND
+                    sol_y = Y_COND + COND_H + 30
+                    bypass_x = cx - 140
+                    
+                    hgbv = SimpleBox("Hot Gas\nBypass", width=bypass_w, height=50)
+                    hgbv.setPos(bypass_x, bypass_y)
+                    self.scene.addItem(hgbv)
+                    
+                    hgs = SimpleBox("Hot Gas\nSolenoid", width=bypass_w, height=50)
+                    hgs.setPos(bypass_x, sol_y)
+                    self.scene.addItem(hgs)
+                    
+                    cond = SimpleBox("Condenser", width=COND_W, height=COND_H)
+                    cond.setPos(cx - COND_W // 2, Y_COND)
+                    self.scene.addItem(cond)
+                    
+                    lls = SimpleBox("Liquid Line\nSolenoid", width=COND_W, height=40)
+                    lls.setPos(cx - COND_W // 2, sol_y)
+                    self.scene.addItem(lls)
+                    
+                    txv = SimpleBox("TXV", width=TXV_W, height=TXV_H)
+                    txv.setPos(cx - TXV_W // 2, Y_TXV)
+                    self.scene.addItem(txv)
+                    
+                    evap = EvaporatorBox("Evaporator", num_circuits=2, width=cas_evap_w, height=EVAP_H)
+                    evap.setPos(cx - cas_evap_w // 2, Y_EVAP)
+                    self.scene.addItem(evap)
+                    
+                    dist_h = 40
+                    dist = SplitterManifold(num_splits=2, width=cas_evap_w, height=dist_h, is_reversed=False)
+                    dist.setPos(cx - cas_evap_w // 2, Y_EVAP - dist_h - 15)
+                    self.scene.addItem(dist)
+                    
+                    head_h = 40
+                    head = SplitterManifold(num_splits=2, width=cas_evap_w, height=head_h, is_reversed=True)
+                    head.setPos(cx - cas_evap_w // 2, Y_EVAP + EVAP_H)
+                    self.scene.addItem(head)
+                    
+                    comp_out = comp.scenePos() + comp.outlet_pos
+                    split_y = Y_COMP + COMP_H + 15
+                    draw_pipe(self.scene, comp_out, QPointF(cx, split_y))
+                    
+                    hgbv_in = hgbv.scenePos() + hgbv.inlet_pos
+                    draw_pipe(self.scene, QPointF(cx, split_y), QPointF(hgbv_in.x(), split_y))
+                    draw_pipe(self.scene, QPointF(hgbv_in.x(), split_y), hgbv_in)
+                    
+                    draw_pipe(self.scene, hgbv.scenePos() + hgbv.outlet_pos, hgs.scenePos() + hgs.inlet_pos)
+                    
+                    cond_in = cond.scenePos() + cond.inlet_pos
+                    draw_pipe(self.scene, QPointF(cx, split_y), QPointF(cond_in.x(), split_y))
+                    draw_pipe(self.scene, QPointF(cond_in.x(), split_y), cond_in)
+                    
+                    draw_pipe(self.scene, cond.scenePos() + cond.outlet_pos, lls.scenePos() + lls.inlet_pos)
+                    draw_pipe(self.scene, lls.scenePos() + lls.outlet_pos, txv.scenePos() + txv.inlet_pos)
+                    
+                    dist_in = dist.scenePos() + dist.inlet_pos
+                    asc_y = dist_in.y() - 25
+                    txv_out = txv.scenePos() + txv.outlet_pos
+                    hgs_out = hgs.scenePos() + hgs.outlet_pos
+                    
+                    asc_label = QGraphicsTextItem("ASC")
+                    asc_label.setDefaultTextColor(QColor('#555555'))
+                    asc_label.setPos(cx + 5, asc_y - 10)
+                    self.scene.addItem(asc_label)
+                    
+                    draw_pipe(self.scene, txv_out, dist_in)
+                    
+                    draw_pipe(self.scene, hgs_out, QPointF(hgs_out.x(), asc_y))
+                    draw_pipe(self.scene, QPointF(hgs_out.x(), asc_y), QPointF(cx, asc_y))
+                    
+                    comp_in = comp.scenePos() + comp.inlet_pos
+                    head_out = head.scenePos() + head.outlet_pos
+                    LEFTMOST_CAS = cx - max(cas_evap_w / 2 + 40, 180)
+                    draw_pipe(self.scene, head_out, QPointF(cx, global_merge_y))
+                    draw_pipe(self.scene, QPointF(cx, global_merge_y), QPointF(LEFTMOST_CAS, global_merge_y))
+                    draw_pipe(self.scene, QPointF(LEFTMOST_CAS, global_merge_y), QPointF(LEFTMOST_CAS, Y_COMP - 20))
+                    draw_pipe(self.scene, QPointF(LEFTMOST_CAS, Y_COMP - 20), QPointF(comp_in.x(), Y_COMP - 20))
+                    draw_pipe(self.scene, QPointF(comp_in.x(), Y_COMP - 20), comp_in)
+                    
+                    bound_left = min(cx - cas_evap_w/2 - 60, cx - 180)
+                    bound_width = (cx + cas_evap_w/2 + 60) - bound_left
+                
+                # Boundary box for this individual cassette
+                _draw_boundary(self.scene, f"Refrigeration Process [{lb} Cassette]", bound_left, Y_COMP - 40, bound_width, global_merge_y - Y_COMP + 40)
+            
+            MERGE_Y = global_merge_y
 
         # Y positions (MERGE_Y is where the loopback starts)
         base_y = MERGE_Y + 100
         
-        # Primary Discharge Air (Coldest)
-        pri_air = ColoredBox("Primary Discharge Air", width=combined_w, height=30, bg_color="#B3E5FC") # Light Blue
-        pri_air.setPos(left_edge, base_y)
-        self.scene.addItem(pri_air)
+        is_cassette = self.current_mode.startswith('cassette')
         
-        # Secondary Discharge Air (Warmish)
-        sec_air = ColoredBox("Secondary Discharge Air", width=combined_w, height=30, bg_color="#FFF9C4") # Light Yellow
-        sec_air.setPos(left_edge, base_y + 40)
-        self.scene.addItem(sec_air)
-        
+        if is_cassette:
+            ret_air_y = base_y
+            ret_air = ColoredBox("Return Air", width=combined_w, height=30, bg_color="#FFCDD2")
+            ret_air.setPos(left_edge, ret_air_y)
+            self.scene.addItem(ret_air)
+            
+            fan_y = base_y + 40
+            pri_air_y = fan_y + 60 + 10
+            
+            pri_air = ColoredBox("Primary Discharge Air", width=combined_w, height=30, bg_color="#B3E5FC")
+            pri_air.setPos(left_edge, pri_air_y)
+            self.scene.addItem(pri_air)
+            
+            air_bottom_y = pri_air_y
+        else:
+            pri_air_y = base_y
+            pri_air = ColoredBox("Primary Discharge Air", width=combined_w, height=30, bg_color="#B3E5FC")
+            pri_air.setPos(left_edge, pri_air_y)
+            self.scene.addItem(pri_air)
+            
+            if self.current_mode == 'modular':
+                sec_air = ColoredBox("Secondary Discharge Air", width=combined_w, height=30, bg_color="#FFF9C4")
+                sec_air.setPos(left_edge, base_y + 40)
+                self.scene.addItem(sec_air)
+                fan_y = base_y + 80
+            else:
+                fan_y = base_y + 40
+                
+            ret_air_y = fan_y + 60 + 10
+            ret_air = ColoredBox("Return Air", width=combined_w, height=30, bg_color="#FFCDD2")
+            ret_air.setPos(left_edge, ret_air_y)
+            self.scene.addItem(ret_air)
+            
+            air_bottom_y = ret_air_y
+
         # Fans
-        fan_y = base_y + 80
         fan_size = 60
         if self.current_mode == 'modular':
             for mx, label in zip(mod_xs, mod_lbs):
@@ -468,8 +680,7 @@ class TestWindow(QMainWindow):
                 # Airflow arrows
                 _draw_up_arrow(self.scene, mx, fan_y + fan_size + 10, fan_y + fan_size)
                 _draw_up_arrow(self.scene, mx, fan_y, fan_y - 10)
-        else: # door mode
-            # Place `current_count` fans evenly spaced
+        else: # door mode or cassette mode
             slice_w = combined_w / self.current_count
             for i in range(self.current_count):
                 fx = left_edge + (slice_w / 2) + (i * slice_w)
@@ -478,28 +689,19 @@ class TestWindow(QMainWindow):
                 self.scene.addItem(fan)
                 
                 # Airflow arrows
-                _draw_up_arrow(self.scene, fx, fan_y + fan_size + 10, fan_y + fan_size)
-                _draw_up_arrow(self.scene, fx, fan_y, fan_y - 10)
-                
-        # Return Air (Warmest)
-        ret_air_y = fan_y + fan_size + 10
-        ret_air = ColoredBox("Return Air", width=combined_w, height=30, bg_color="#FFCDD2") # Light Red
-        ret_air.setPos(left_edge, ret_air_y)
-        self.scene.addItem(ret_air)
-
-        # ── Grouping Boundaries ──────────────────────────────────────────────
-        process_x = LEFTMOST - 40
-        process_w = (right_edge + 40) - process_x
-        process_y = Y_COMP - 80
-        process_h = MERGE_Y + 40 - process_y
-        _draw_boundary(self.scene, "Refrigeration Process", process_x, process_y, process_w, process_h)
+                if is_cassette:
+                    _draw_up_arrow(self.scene, fx, fan_y - 10, fan_y)
+                    _draw_up_arrow(self.scene, fx, fan_y + fan_size, fan_y + fan_size + 10)
+                else:
+                    _draw_up_arrow(self.scene, fx, fan_y + fan_size + 10, fan_y + fan_size)
+                    _draw_up_arrow(self.scene, fx, fan_y, fan_y - 10)
 
         air_y = base_y - 40
-        air_h = (ret_air_y + 30 + 40) - air_y
+        air_h = (air_bottom_y + 30 + 40) - air_y
         _draw_boundary(self.scene, "Airflow Diagram", process_x, air_y, process_w, air_h)
 
         # ── Shelving Diagram ──────────────────────────────────────────────────
-        shelf_base_y = ret_air_y + 30 + 100
+        shelf_base_y = air_bottom_y + 30 + 100
         num_rows = self.shelf_spin.value()
         shelf_height = 30
         shelf_gap = 10
