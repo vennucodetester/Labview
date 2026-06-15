@@ -7,11 +7,16 @@
   "objective": "",
   "case_model": "ID6SU12WE",
   "topology": {
-    "case_family": "Reach-in (non-modular)",
+    "case_family": "Modular",
     "system_type": "shared",
-    "modules": 1,
+    "mode": "modular",
+    "modules": 3,
+    "num_doors": 3,
+    "num_cassettes": 1,
     "circuits_per_coil": 6,
     "condenser_cooling": "Water",
+    "case_type": "Open",
+    "shelf_rows": 6,
     "doored": false
   },
   "parts": {},

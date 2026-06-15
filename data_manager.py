@@ -112,7 +112,8 @@ class DataManager(QObject):
             "pipes": {},
             "sensor_roles": {},
             "custom_sensors": {},
-            "sensor_boxes": {}  # Renamed from other_sensors_boxes
+            "sensor_boxes": {},   # Renamed from other_sensors_boxes
+            "sensor_points": {},  # role_key → {enabled, label}
         }
 
     # --- load_csv and reconcile_csv are unchanged ---
@@ -234,6 +235,11 @@ class DataManager(QObject):
                 self.csv_data = new_csv_data
                 self._invalidate_filtered_cache()
                 self.data_changed.emit()
+            # Auto-map CSV columns to canonical roles using the alias DB
+            try:
+                self.auto_map_csv_to_canonical(new_sensor_list)
+            except Exception as e:
+                print(f"[AUTO_MAP] Failed: {e}")
             return True
         except Exception as e:
             print(f"Error loading CSV file: {e}")
@@ -1342,6 +1348,270 @@ class DataManager(QObject):
         return out
 
     # === SENSOR ROLE MAPPING API ===
+    # ── Canonical sensor naming + alias DB ────────────────────────────────────
+
+    _ALIAS_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  'library', 'sensor_aliases', 'seed.json')
+    _ALIAS_DB_USER = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  'library', 'sensor_aliases', 'learned.json')
+
+    def _load_alias_db(self) -> dict:
+        """Combined alias DB: seed (from 7 historical configs) + learned (this
+        session's confirmed mappings).  Returns canonical -> set(alias_str).
+        """
+        combined = {}
+        for path in (self._ALIAS_DB_PATH, self._ALIAS_DB_USER):
+            try:
+                with open(path, encoding='utf-8') as f:
+                    d = json.load(f)
+                for c, names in d.items():
+                    combined.setdefault(c, set()).update(names)
+            except FileNotFoundError:
+                pass
+            except Exception as e:
+                print(f"[ALIAS_DB] Load failed for {path}: {e}")
+        return combined
+
+    def _save_learned_alias(self, canonical: str, csv_name: str):
+        """Append a confirmed alias to the learned DB."""
+        try:
+            os.makedirs(os.path.dirname(self._ALIAS_DB_USER), exist_ok=True)
+            try:
+                with open(self._ALIAS_DB_USER, encoding='utf-8') as f:
+                    learned = json.load(f)
+            except FileNotFoundError:
+                learned = {}
+            entry = set(learned.get(canonical, []))
+            entry.add(csv_name.strip())
+            learned[canonical] = sorted(entry)
+            with open(self._ALIAS_DB_USER, 'w', encoding='utf-8') as f:
+                json.dump(learned, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"[ALIAS_DB] Save failed: {e}")
+
+    def auto_map_csv_to_canonical(self, csv_columns) -> int:
+        """For each CSV column, try to find a canonical role on the current
+        diagram (via alias DB exact + normalized match) and auto-map it.
+
+        Returns count of newly mapped columns.
+        """
+        from sensor_canonical import (resolve_canonical_from_role_key,
+                                      normalize_for_match)
+        if not csv_columns:
+            return 0
+
+        aliases = self._load_alias_db()
+        # Build reverse index: normalized alias -> canonical
+        rev_exact = {}
+        rev_norm = {}
+        for canonical, names in aliases.items():
+            for n in names:
+                rev_exact[n.strip()] = canonical
+                rev_norm[normalize_for_match(n)] = canonical
+
+        # Build canonical -> first available role_key on this diagram
+        canon_to_role_keys = {}
+        for rk in self._enumerate_diagram_role_keys():
+            res = resolve_canonical_from_role_key(self.diagram_model, rk)
+            if res:
+                canon_to_role_keys.setdefault(res[0], []).append(rk)
+
+        # Walk CSV columns
+        mapped_n = 0
+        already_mapped = set((self.diagram_model.get('sensor_roles') or {}).values())
+        for col in csv_columns:
+            if col in already_mapped:
+                continue
+            canonical = rev_exact.get(col.strip()) or rev_norm.get(normalize_for_match(col))
+            if not canonical:
+                continue
+            target_keys = canon_to_role_keys.get(canonical, [])
+            if not target_keys:
+                continue
+            # Find a role_key that's not already mapped
+            current = self.diagram_model.get('sensor_roles') or {}
+            free_key = next((k for k in target_keys if k not in current), None)
+            if not free_key:
+                continue
+            self.map_sensor_to_role(free_key, col)
+            already_mapped.add(col)
+            mapped_n += 1
+
+        print(f"[AUTO_MAP] Auto-mapped {mapped_n} CSV columns from alias DB "
+              f"(of {len(csv_columns)} columns, {len(canon_to_role_keys)} canonical roles on diagram)")
+        if mapped_n:
+            self.diagram_model_changed.emit()
+        return mapped_n
+
+    def _enumerate_diagram_role_keys(self):
+        """Yield every role_key shape that exists on the current diagram —
+        component ports (Type.cid.port) plus sensor-box slots
+        (sensorbox.boxid.sensor_id).
+
+        Includes dynamically-generated ports for ShelvingGrid, Fan, and
+        AirSensorArray that don't appear in the static schema.
+        """
+        comps = self.diagram_model.get('components', {}) or {}
+        for cid, c in comps.items():
+            ctype = c.get('type')
+            props = c.get('properties', {}) or {}
+            try:
+                from port_resolver import enumerate_ports_for_component
+                ports = enumerate_ports_for_component(ctype, props)
+            except Exception:
+                ports = []
+            for p in ports:
+                yield f"{ctype}.{cid}.{p}"
+
+            # ShelvingGrid: dynamic ports sensor_r{0..R-1}_{top|bottom}_c{0..C-1}
+            if ctype == 'ShelvingGrid':
+                shelf_rows = int(props.get('shelf_rows', 6) or 6)
+                if props.get('shelving_type', 'Modular') == 'Modular':
+                    cols_total = int(props.get('module_count', 3) or 3) + 1
+                else:
+                    cols_total = int(props.get('door_count', 3) or 3) + 1
+                for r in range(shelf_rows):
+                    for col in range(cols_total):
+                        yield f"ShelvingGrid.{cid}.sensor_r{r}_top_c{col}"
+                        yield f"ShelvingGrid.{cid}.sensor_r{r}_bottom_c{col}"
+
+            # Fan: dynamic ports sensor_{0..N-1}
+            if ctype == 'Fan':
+                n = int(props.get('sensor_count', 2) or 2)
+                for i in range(n):
+                    yield f"Fan.{cid}.sensor_{i}"
+
+            # AirSensorArray: role_key uses curtain type as prefix
+            if ctype == 'AirSensorArray':
+                curtain = (props.get('curtain_type') or 'Primary') + 'Air'
+                n = int(props.get('sensor_count', 11) or 11)
+                for i in range(1, n + 1):
+                    yield f"{curtain}.{cid}.{i}"
+                # Also yield the canonical AirSensorArray.cid.i form (used by some code)
+                for i in range(1, n + 1):
+                    yield f"AirSensorArray.{cid}.{i}"
+
+        for bid, box in (self.diagram_model.get('sensor_boxes') or {}).items():
+            for s in box.get('sensors', []) or []:
+                yield f"sensorbox.{bid}.{s.get('id')}"
+
+    # ── Sensor Points ─────────────────────────────────────────────────────────
+
+    def populate_sensor_points(self):
+        """Enumerate every port on every component and add any missing entries
+        to sensor_points — all enabled by default.  Safe to call repeatedly."""
+        from port_resolver import list_all_ports
+        if 'sensor_points' not in self.diagram_model:
+            self.diagram_model['sensor_points'] = {}
+        sp = self.diagram_model['sensor_points']
+        try:
+            for p in list_all_ports(self):
+                rk = p['roleKeyPrimary']
+                if rk not in sp:
+                    sp[rk] = {'enabled': True, 'label': p['label']}
+        except Exception as e:
+            print(f"[SENSOR_POINTS] populate failed: {e}")
+
+    def is_sensor_point_enabled(self, role_key: str) -> bool:
+        sp = self.diagram_model.get('sensor_points', {})
+        entry = sp.get(role_key)
+        return True if entry is None else bool(entry.get('enabled', True))
+
+    def set_sensor_point_enabled(self, role_key: str, enabled: bool):
+        sp = self.diagram_model.setdefault('sensor_points', {})
+        sp.setdefault(role_key, {})['enabled'] = enabled
+        self.diagram_model_changed.emit()
+
+    def set_sensor_points_enabled_by(self, comp_type: str = None,
+                                     circuit_label: str = None, enabled: bool = True):
+        """Bulk enable/disable by component type and/or circuit label."""
+        comps = self.diagram_model.get('components', {})
+        sp    = self.diagram_model.setdefault('sensor_points', {})
+        for rk, entry in sp.items():
+            # Parse role_key: "{Type}.{comp_id}.{port}"
+            parts = rk.split('.')
+            if len(parts) < 3:
+                continue
+            ctype = parts[0]; cid = parts[1]
+            comp  = comps.get(cid, {})
+            clbl  = (comp.get('properties') or {}).get('circuit_label', '') or ''
+            if clbl == 'None':
+                clbl = ''
+            if comp_type and ctype != comp_type:
+                continue
+            if circuit_label and clbl != circuit_label:
+                continue
+            entry['enabled'] = enabled
+        self.diagram_model_changed.emit()
+
+    def _pattern_key(self, role_key: str) -> str:
+        """Convert 'Compressor.comp_id.SP' → 'Compressor::SP' (portable across sessions)."""
+        comps = self.diagram_model.get('components', {})
+        parts = role_key.split('.')
+        if len(parts) >= 3:
+            ctype = parts[0]; cid = parts[1]; port = '.'.join(parts[2:])
+            comp  = comps.get(cid, {})
+            clbl  = (comp.get('properties') or {}).get('circuit_label', '') or ''
+            if clbl == 'None':
+                clbl = ''
+            return f"{ctype}:{clbl}:{port}"
+        return role_key
+
+    @staticmethod
+    def _get_layout_key(topo: dict) -> str:
+        mode     = topo.get('mode', 'modular')
+        circuits = int(topo.get('circuits_per_coil', 6) or 6)
+        if mode == 'modular':
+            suffix = f"{topo.get('modules', 3)}mod"
+        elif mode == 'door':
+            suffix = f"{topo.get('num_doors', 3)}dr"
+        elif mode == 'cassette_mt':
+            suffix = f"{topo.get('num_cassettes', 1)}cmt"
+        elif mode == 'cassette_lt':
+            suffix = f"{topo.get('num_cassettes', 1)}clt"
+        else:
+            suffix = 'unknown'
+        return f"{suffix}_{circuits}cir"
+
+    @staticmethod
+    def _sensor_defaults_path(layout_key: str) -> str:
+        d = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         'library', 'sensor_defaults')
+        os.makedirs(d, exist_ok=True)
+        return os.path.join(d, f"{layout_key}.json")
+
+    def save_sensor_point_defaults(self, topo: dict):
+        """Save current on/off state as the default for this layout shape."""
+        sp = self.diagram_model.get('sensor_points', {})
+        defaults = {self._pattern_key(rk): {'enabled': v.get('enabled', True)}
+                    for rk, v in sp.items()}
+        path = self._sensor_defaults_path(self._get_layout_key(topo))
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(defaults, f, indent=2)
+        print(f"[SENSOR_DEFAULTS] Saved {len(defaults)} entries → {path}")
+
+    def apply_sensor_point_defaults(self, topo: dict) -> bool:
+        """Load saved defaults and apply to current sensor_points.  Returns True if found."""
+        path = self._sensor_defaults_path(self._get_layout_key(topo))
+        if not os.path.exists(path):
+            return False
+        try:
+            with open(path, encoding='utf-8') as f:
+                defaults = json.load(f)
+        except Exception as e:
+            print(f"[SENSOR_DEFAULTS] Load failed: {e}")
+            return False
+        sp = self.diagram_model.setdefault('sensor_points', {})
+        for rk in list(sp.keys()):
+            pk = self._pattern_key(rk)
+            if pk in defaults:
+                sp[rk]['enabled'] = defaults[pk].get('enabled', True)
+        print(f"[SENSOR_DEFAULTS] Applied {len(defaults)} defaults for layout "
+              f"'{self._get_layout_key(topo)}'")
+        return True
+
+    # ─────────────────────────────────────────────────────────────────────────
+
     def map_sensor_to_role(self, role_key, sensor_name):
         """Map a sensor name to a canonical role key in the diagram model.
         
@@ -1379,7 +1649,16 @@ class DataManager(QObject):
         
         # Map the sensor to the new role (this ensures one-to-one mapping)
         roles[role_key] = sensor_name
-        
+
+        # Learn this alias for future CSV loads
+        try:
+            from sensor_canonical import resolve_canonical_from_role_key
+            res = resolve_canonical_from_role_key(self.diagram_model, role_key)
+            if res:
+                self._save_learned_alias(res[0], sensor_name)
+        except Exception:
+            pass
+
         print(f"[MAP] Successfully mapped {sensor_name} to {role_key}")
         print(f"[MAP] Total mappings after operation: {len(roles)}")
         

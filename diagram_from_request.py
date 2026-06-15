@@ -243,6 +243,7 @@ def build_diagram_for_request(request: dict) -> dict:
     if meta.get('modules') == want_mod or meta.get('system_type') == 'cassette':
         model = copy.deepcopy(_load_template(meta['file']))
         _patch_params(model, topo)
+        _ensure_canonical_sensor_boxes(model, topo)
         model['_generated_from'] = (f"{meta['file']} "
                                     f"(source {meta.get('source')})")
         print(f"[DIAGRAM GEN] Used template {meta['file']} "
@@ -253,7 +254,42 @@ def build_diagram_for_request(request: dict) -> dict:
     # 3-module reference (only path that needs surgery)
     print(f"[DIAGRAM GEN] No exact template for {want_mod} module(s) — "
           f"reducing the 3-module reference")
-    return build_shared_from_template(topo)
+    model = build_shared_from_template(topo)
+    _ensure_canonical_sensor_boxes(model, topo)
+    return model
+
+
+def _ensure_canonical_sensor_boxes(model: dict, topo: dict) -> None:
+    """Auto-add two canonical sensor boxes (Ambient & Walls, Electrical & System)
+    so off-diagram instruments have a home on every generated diagram.
+
+    The sensors are added with canonical IDs as their sensor ids — no UUIDs —
+    so role_keys are deterministic and the alias DB lights up immediately.
+
+    Safe to call repeatedly: if a box with the same id already exists, leaves
+    it alone.
+    """
+    from sensor_canonical import AMBIENT_WALLS_SLOTS, electrical_system_slots
+
+    boxes = model.setdefault('sensor_boxes', {})
+
+    n_compressors = sum(1 for c in (model.get('components') or {}).values()
+                        if c.get('type') == 'Compressor')
+
+    if 'box_ambient_walls' not in boxes:
+        boxes['box_ambient_walls'] = {
+            'position': [-1200, 100],
+            'title': 'Ambient & Walls',
+            'sensors': [{'id': cid, 'label': human}
+                        for cid, human in AMBIENT_WALLS_SLOTS],
+        }
+    if 'box_electrical_system' not in boxes:
+        boxes['box_electrical_system'] = {
+            'position': [200, 100],
+            'title': 'Electrical & System',
+            'sensors': [{'id': cid, 'label': human}
+                        for cid, human in electrical_system_slots(n_compressors)],
+        }
 
 def build_bare_minimum_diagram(request: dict) -> dict:
     """Build a clean process diagram matching test_loop.py exactly.
@@ -959,6 +995,7 @@ def build_bare_minimum_diagram(request: dict) -> dict:
         'custom_sensors':  {},
         'role_dot_labels': {},
         '_simple_mode': True,
+        '_topology': topo,
         '_generated_from': (f'bare_minimum ({mode}, count={count}, '
                             f'{num_circuits} circuits/coil)'),
     }

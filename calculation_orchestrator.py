@@ -130,7 +130,12 @@ def _build_cassette_unit_sensor_map(
     sm: dict = {}
     ab = module_abbrev(label)
 
+    sp_map = diagram_model.get('sensor_points', {})
+
     def _rms(comp_type, comp_id, port):
+        role_key = f"{comp_type}.{comp_id}.{port}"
+        if role_key in sp_map and not sp_map[role_key].get('enabled', True):
+            return None
         return resolve_df_column(
             resolve_mapped_sensor(diagram_model, comp_type, comp_id, port)
         )
@@ -247,6 +252,11 @@ def _find_sensor_for_role(model: Dict, role_def: tuple) -> Optional[str]:
             # Found matching component, resolve the sensor
             sensor = resolve_mapped_sensor(model, comp_type, comp_id, role_port)
             if sensor:
+                # Respect sensor_points enable/disable
+                role_key = f"{comp_type}.{comp_id}.{role_port}"
+                sp = model.get('sensor_points', {})
+                if role_key in sp and not sp[role_key].get('enabled', True):
+                    return None
                 return sensor
 
     return None

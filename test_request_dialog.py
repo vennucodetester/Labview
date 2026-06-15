@@ -549,6 +549,10 @@ class TestRequestDialog(QDialog):
         model.pop('_generated_from', None)
         dm.diagram_model.clear()
         dm.diagram_model.update(model)
+        # Populate sensor points, then restore any saved defaults for this layout
+        dm.populate_sensor_points()
+        topo = self.request.get('topology', {})
+        dm.apply_sensor_point_defaults(topo)
         dm.diagram_model_changed.emit()
         topo = self.request.get('topology', {})
         mode = topo.get('mode', 'modular')

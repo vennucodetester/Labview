@@ -20,9 +20,11 @@ SCHEMAS = {
             "circuit_label": {"type": "enum", "default": "None", "options": ["None", "Left", "Center", "Right"]}
         },
         "ports": [
-            {"name": "inlet", "type": "in", "fluid_state": "gas", "pressure_side": "low", "position": [0.5, 0]},
-            {"name": "outlet", "type": "out", "fluid_state": "gas", "pressure_side": "high", "position": [0.5, 1]},
-            {"name": "RPM", "type": "sensor", "fluid_state": "any", "pressure_side": "any", "position": [0.1, 0.9]}
+            {"name": "inlet",  "type": "in",     "fluid_state": "gas", "pressure_side": "low",  "position": [0.5, 0]},
+            {"name": "outlet", "type": "out",    "fluid_state": "gas", "pressure_side": "high", "position": [0.5, 1]},
+            {"name": "SP",     "type": "sensor", "fluid_state": "any", "pressure_side": "low",  "position": [0.1, 0.1]},
+            {"name": "DP",     "type": "sensor", "fluid_state": "any", "pressure_side": "high", "position": [0.9, 0.1]},
+            {"name": "RPM",    "type": "sensor", "fluid_state": "any", "pressure_side": "any",  "position": [0.1, 0.9]}
         ],
         "zones": [
             {"name": "motor", "rect": [0.3, 0.3, 0.4, 0.4]}

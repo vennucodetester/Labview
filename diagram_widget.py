@@ -618,6 +618,13 @@ class DiagramWidget(QWidget):
         new_diagram_btn.clicked.connect(self.on_new_diagram_clicked)
         self.toolbar.addWidget(new_diagram_btn)
 
+        import_btn = QPushButton("📥 Import Mappings")
+        import_btn.setToolTip(
+            "Load all sensor mappings, groups, and sensor boxes from a saved config file.\n"
+            "Use this after generating a new diagram to restore mappings from a previous session.")
+        import_btn.clicked.connect(self._import_mappings_from_config)
+        self.toolbar.addWidget(import_btn)
+
         self.toolbar.addSeparator()
 
         # Components dropdown menu
@@ -718,6 +725,122 @@ class DiagramWidget(QWidget):
                              "makes pipes render as straight 90° runs")
         align_btn.clicked.connect(self._align_connected_components)
         self.toolbar.addWidget(align_btn)
+
+        self.toolbar.addSeparator()
+
+        save_layout_btn = QPushButton("💾 Save Layout")
+        save_layout_btn.setToolTip(
+            "Remember which sensor spots are ON/OFF for this layout type.\n"
+            "Next time you load the same layout the dots will restore automatically.")
+        save_layout_btn.clicked.connect(self._save_sensor_layout)
+        self.toolbar.addWidget(save_layout_btn)
+
+    def _save_sensor_layout(self):
+        topo = self.data_manager.diagram_model.get('_topology', {})
+        if not topo:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(self, "Save Layout",
+                                    "No layout info found.\n"
+                                    "Generate a diagram from a test request first.")
+            return
+        self.data_manager.save_sensor_point_defaults(topo)
+        from PyQt6.QtWidgets import QMessageBox
+        lk = self.data_manager._get_layout_key(topo)
+        QMessageBox.information(self, "Save Layout",
+                                f"Saved sensor defaults for layout '{lk}'.\n"
+                                "These settings will be restored automatically "
+                                "next time this layout is generated.")
+
+    def _show_sensor_point_menu(self, event, role_key, currently_enabled=True):
+        """Right-click context menu on a sensor dot — enable/disable this spot or groups."""
+        from PyQt6.QtWidgets import QMenu
+        from PyQt6.QtGui import QAction
+
+        # Parse role_key to get comp_type, comp_id, port
+        parts = role_key.split('.')
+        comp_type = parts[0] if parts else ''
+        comp_id   = parts[1] if len(parts) > 1 else ''
+        comp      = self.data_manager.diagram_model.get('components', {}).get(comp_id, {})
+        clbl      = (comp.get('properties') or {}).get('circuit_label', '') or ''
+        if clbl == 'None':
+            clbl = ''
+
+        menu = QMenu(self.view)
+
+        # Toggle this single spot
+        if currently_enabled:
+            act_toggle = QAction("Disable this spot", menu)
+            act_toggle.triggered.connect(lambda: self._toggle_sensor_point(role_key, False))
+        else:
+            act_toggle = QAction("Enable this spot", menu)
+            act_toggle.triggered.connect(lambda: self._toggle_sensor_point(role_key, True))
+        menu.addAction(act_toggle)
+
+        menu.addSeparator()
+
+        # Group: all of same type
+        if comp_type:
+            act_type_off = QAction(f"Disable all [{comp_type}]", menu)
+            act_type_off.triggered.connect(
+                lambda: self._bulk_sensor_points(comp_type=comp_type, enabled=False))
+            menu.addAction(act_type_off)
+
+            act_type_on = QAction(f"Enable all [{comp_type}]", menu)
+            act_type_on.triggered.connect(
+                lambda: self._bulk_sensor_points(comp_type=comp_type, enabled=True))
+            menu.addAction(act_type_on)
+
+        # Group: all of same circuit
+        if clbl:
+            menu.addSeparator()
+            act_cir_off = QAction(f"Disable all [{clbl} circuit]", menu)
+            act_cir_off.triggered.connect(
+                lambda: self._bulk_sensor_points(circuit_label=clbl, enabled=False))
+            menu.addAction(act_cir_off)
+
+            act_cir_on = QAction(f"Enable all [{clbl} circuit]", menu)
+            act_cir_on.triggered.connect(
+                lambda: self._bulk_sensor_points(circuit_label=clbl, enabled=True))
+            menu.addAction(act_cir_on)
+
+        menu.addSeparator()
+
+        act_all_on  = QAction("Enable ALL spots", menu)
+        act_all_on.triggered.connect(lambda: self._bulk_sensor_points(enabled=True))
+        menu.addAction(act_all_on)
+
+        act_all_off = QAction("Disable ALL spots", menu)
+        act_all_off.triggered.connect(lambda: self._bulk_sensor_points(enabled=False))
+        menu.addAction(act_all_off)
+
+        # Unmap option (only when enabled + mapped)
+        if currently_enabled:
+            current_mapping = self.data_manager.get_mapped_sensor_for_role(role_key)
+            if current_mapping:
+                menu.addSeparator()
+                act_unmap = QAction(f"Unmap [{current_mapping}]", menu)
+                act_unmap.triggered.connect(
+                    lambda: self._do_unmap(role_key, current_mapping))
+                menu.addAction(act_unmap)
+
+        # Show near cursor
+        view_pos = self.view.mapFromScene(event.scenePos())
+        global_pos = self.view.mapToGlobal(view_pos)
+        menu.exec(global_pos)
+
+    def _toggle_sensor_point(self, role_key, enabled):
+        self.data_manager.set_sensor_point_enabled(role_key, enabled)
+        self.build_scene_from_model()
+
+    def _bulk_sensor_points(self, comp_type=None, circuit_label=None, enabled=True):
+        self.data_manager.set_sensor_points_enabled_by(
+            comp_type=comp_type, circuit_label=circuit_label, enabled=enabled)
+        self.build_scene_from_model()
+
+    def _do_unmap(self, role_key, sensor_name):
+        self.data_manager.unmap_role(role_key)
+        self.build_scene_from_model()
+        print(f"[UNMAP] Unmapped {sensor_name} from {role_key}")
 
     # Components that should never be nudged by Align Ports (anchors)
     _ALIGN_FIXED_TYPES = {'Evaporator', 'Condenser', 'Compressor',
@@ -1183,6 +1306,13 @@ class DiagramWidget(QWidget):
         In Mapping: show sensor number when mapped, else empty.
         In Analysis: show average value when mapped, else empty.
         """
+        # Ensure every port has an entry in sensor_points (all ON by default).
+        # Also tries to apply saved defaults for this layout type.
+        self.data_manager.populate_sensor_points()
+        topo = self.data_manager.diagram_model.get('_topology', {})
+        if topo:
+            self.data_manager.apply_sensor_point_defaults(topo)
+
         mode_text = self.mode_combo.currentText() if getattr(self, 'mode_combo', None) else 'Drawing'
         is_analysis = (mode_text == 'Analysis')
         
@@ -1203,7 +1333,7 @@ class DiagramWidget(QWidget):
                     if comp_type == 'Sensor' and port_type in ('in', 'out'):
                         continue
                     pos = port.get_scene_position()
-                    
+
                     # Create meaningful role key for diagnostics
                     # For AirSensorArray, include curtain type for better mapping
                     if comp_type == 'AirSensorArray':
@@ -1214,8 +1344,8 @@ class DiagramWidget(QWidget):
                     else:
                         # Standard format: component_type.component_id.port_name
                         role_key = f"{comp_type}.{comp_id}.{port_name}"
-                    
-                    mapped_sensor = self.data_manager.get_mapped_sensor_for_role(role_key)
+
+                    enabled = self.data_manager.is_sensor_point_enabled(role_key)
                     if mapped_sensor:
                         if is_analysis:
                             val = self.data_manager.get_sensor_value(mapped_sensor)
@@ -1224,10 +1354,10 @@ class DiagramWidget(QWidget):
                             num = self.data_manager.get_sensor_number(mapped_sensor)
                             label = f"#{num}" if num is not None else ""
                     else:
-                        # Unmapped - show nothing (just empty label)
                         label = ""
-                    
-                    self._add_role_dot(pos, role_key, label, port_item=port)
+
+                    self._add_role_dot(pos, role_key, label, port_item=port,
+                                       enabled=enabled)
 
         # Add custom sensor points
         custom_sensors = self.data_manager.diagram_model.get('custom_sensors', {})
@@ -1282,8 +1412,10 @@ class DiagramWidget(QWidget):
 
         return QColor(color_map.get(status, '#FFA500'))  # Default to orange if unknown
 
-    def _add_role_dot(self, scene_pos, role_key, label_text, is_custom=False, custom_sensor_data=None, sensor_id=None, port_item=None):
-        from PyQt6.QtWidgets import QGraphicsEllipseItem, QGraphicsTextItem, QGraphicsRectItem
+    def _add_role_dot(self, scene_pos, role_key, label_text, is_custom=False,
+                      custom_sensor_data=None, sensor_id=None, port_item=None,
+                      enabled=True):
+        from PyQt6.QtWidgets import QGraphicsEllipseItem, QGraphicsTextItem, QGraphicsRectItem, QGraphicsLineItem
         from PyQt6.QtGui import QBrush, QPen
 
         mapped_sensor = self.data_manager.get_mapped_sensor_for_role(role_key)
@@ -1293,6 +1425,35 @@ class DiagramWidget(QWidget):
         # Selected: bright cyan, 2.8x scale (distinct from out-of-range red)
         SELECTED_COLOR = QColor('#00D4FF')  # Bright cyan - impossible to miss
         SELECTED_SCALE = 2.8
+
+        # DISABLED: grey, semi-transparent, no label, X drawn on top
+        if not enabled:
+            dot = QGraphicsEllipseItem(-6, -6, 12, 12) if not is_custom else QGraphicsRectItem(-6, -6, 12, 12)
+            disabled_color = QColor('#606060')
+            disabled_color.setAlphaF(0.45)
+            dot.setBrush(QBrush(disabled_color))
+            dot.setPen(QPen(QColor('#404040'), 1))
+            dot.setZValue(100)
+            dot.setPos(scene_pos)
+            dot.setCursor(Qt.CursorShape.PointingHandCursor)
+            dot.setToolTip(f"Sensor spot OFF\nRight-click to enable")
+            dot.setData(0, role_key)
+            # X mark
+            x1 = QGraphicsLineItem(-4, -4, 4, 4, dot)
+            x2 = QGraphicsLineItem(-4,  4, 4, -4, dot)
+            x_pen = QPen(QColor('#CCCCCC'), 1.5)
+            x1.setPen(x_pen); x2.setPen(x_pen)
+            self.scene.addItem(dot)
+            self.dot_items[role_key] = dot
+
+            def on_disabled_press(event, rk=role_key):
+                if event.button() == Qt.MouseButton.RightButton:
+                    self._show_sensor_point_menu(event, rk, currently_enabled=False)
+                event.accept()
+            dot.setAcceptedMouseButtons(Qt.MouseButton.LeftButton | Qt.MouseButton.RightButton)
+            dot.mousePressEvent = on_disabled_press
+            return  # skip label for disabled dots
+
         if is_custom:
             # Square for custom sensors
             dot = QGraphicsRectItem(-6, -6, 12, 12)
@@ -1330,11 +1491,27 @@ class DiagramWidget(QWidget):
         # Store role_key for later updates
         dot.setData(0, role_key)
         
-        # Set tooltip - use rich port tooltip when available (same as Drawing mode)
-        if port_item and hasattr(port_item, 'toolTip'):
+        # Build the canonical + human tooltip header (always show first)
+        canon_lines = []
+        try:
+            from sensor_canonical import resolve_canonical_from_role_key
+            cres = resolve_canonical_from_role_key(self.data_manager.diagram_model, role_key)
+            if cres:
+                canon_lines.append(f"<b>{cres[0]}</b>")
+                canon_lines.append(cres[1])
+            if mapped_sensor:
+                canon_lines.append(f"<i>Mapped:</i> {mapped_sensor}")
+            else:
+                canon_lines.append("<i>Unmapped</i>")
+        except Exception:
+            pass
+
+        if canon_lines:
+            tooltip = "<br>".join(canon_lines)
+            tooltip += "<br><br><small>Left-click: map · Right-click: menu</small>"
+        elif port_item and hasattr(port_item, 'toolTip'):
             tooltip = port_item.toolTip()
         elif is_custom:
-            # Custom sensor tooltips
             if mapped_sensor:
                 tooltip = f"Mapped: {mapped_sensor}"
             else:
@@ -1343,15 +1520,9 @@ class DiagramWidget(QWidget):
             tooltip += f"\nDouble-click: Show detailed info"
             tooltip += f"\nCtrl+Left: Map sensor"
             tooltip += f"\nRight-click: Delete"
-            if custom_sensor_data and custom_sensor_data.get('auto_detected'):
-                circuit = custom_sensor_data.get('circuit_label', 'None')
-                pressure = custom_sensor_data.get('pressure_side', 'any')
-                fluid = custom_sensor_data.get('fluid_state', 'any')
-                tooltip += f"\n\n[AUTO-DETECTED]\nCircuit: {circuit}\nPressure: {pressure}\nFluid: {fluid}"
         else:
-            # Fallback (e.g. AirSensorArray without port_item): use rich format if we have role_key
             if mapped_sensor:
-                tooltip = f"Mapped: {mapped_sensor}\nLeft-click: Select sensor\nDouble-click: Show info\nRight-click: Unmap"
+                tooltip = f"Mapped: {mapped_sensor}\nLeft-click: Select sensor\nRight-click: Unmap"
             else:
                 tooltip = "Left-click: Map sensor\nRight-click: Unmap"
         dot.setToolTip(tooltip)
@@ -1429,20 +1600,14 @@ class DiagramWidget(QWidget):
                 single_click['timer'] = t
                 t.start(interval)
             elif event.button() == Qt.MouseButton.RightButton:
-                # Right click behavior
                 if is_custom:
                     # Delete custom sensor
                     if sensor_id:
                         self._delete_custom_sensor(sensor_id)
                         print(f"[DELETE] Deleted custom sensor {sensor_id}")
                 else:
-                    # Unmap component port sensor (scene will rebuild; do not mutate deleted items)
-                    current_mapping = self.data_manager.get_mapped_sensor_for_role(role_key)
-                    if current_mapping:
-                        self.data_manager.unmap_role(role_key)
-                        # Force immediate scene rebuild to avoid accessing deleted items
-                        self.build_scene_from_model()
-                        print(f"[UNMAP] Unmapped {current_mapping} from {role_key}")
+                    # Show context menu: disable/enable + unmap options
+                    self._show_sensor_point_menu(event, role_key, currently_enabled=True)
             event.accept()
         dot.setAcceptedMouseButtons(Qt.MouseButton.LeftButton | Qt.MouseButton.RightButton)
         dot.mousePressEvent = on_press
