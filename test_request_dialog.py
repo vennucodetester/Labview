@@ -191,6 +191,43 @@ class TestRequestDialog(QDialog):
         door_row.addStretch()
         cv.addLayout(door_row)
 
+        # ── Cassette MT button row ────────────────────────────────────────────
+        cmt_row = QHBoxLayout()
+        cmt_row.addWidget(QLabel('Cassette MT:'))
+        self._cmt_btn_group = QButtonGroup(self)
+        self._cmt_btn_group.setExclusive(False)
+        self._cmt_btns: list[QPushButton] = []
+        for i in range(1, 6):
+            btn = QPushButton(str(i))
+            btn.setCheckable(True)
+            btn.setMinimumWidth(38)
+            btn.clicked.connect(lambda checked, n=i: self._pick_cassette_mt(n))
+            self._cmt_btn_group.addButton(btn, i)
+            self._cmt_btns.append(btn)
+            cmt_row.addWidget(btn)
+        cmt_row.addStretch()
+        cv.addLayout(cmt_row)
+
+        # ── Cassette LT button row ────────────────────────────────────────────
+        clt_row = QHBoxLayout()
+        clt_row.addWidget(QLabel('Cassette LT:  '))
+        self._clt_btn_group = QButtonGroup(self)
+        self._clt_btn_group.setExclusive(False)
+        self._clt_btns: list[QPushButton] = []
+        for i in range(1, 6):
+            btn = QPushButton(str(i))
+            btn.setCheckable(True)
+            btn.setMinimumWidth(38)
+            btn.clicked.connect(lambda checked, n=i: self._pick_cassette_lt(n))
+            self._clt_btn_group.addButton(btn, i)
+            self._clt_btns.append(btn)
+            clt_row.addWidget(btn)
+        clt_row.addStretch()
+        cv.addLayout(clt_row)
+
+        # hidden cassette count state
+        self._num_cassettes = 1
+
         # ── bottom form: circuits, case type, shelf rows, system, cooling ───
         bot_form = QFormLayout()
         self.spn_circuits = QSpinBox(); self.spn_circuits.setRange(1, 24)
@@ -216,9 +253,10 @@ class TestRequestDialog(QDialog):
         cv.addLayout(bot_form)
 
         # hidden state — set by button clicks
-        self._diag_mode  = 'modular'
-        self._num_modules = 3
-        self._num_doors   = 3
+        self._diag_mode   = 'modular'
+        self._num_modules  = 3
+        self._num_doors    = 3
+        self._num_cassettes = 1
         self._pick_modular(3)   # default: 3 modules selected
         root.addWidget(case)
 
@@ -308,23 +346,43 @@ class TestRequestDialog(QDialog):
         outer.addWidget(bb)
 
     # ── helpers ──────────────────────────────────────────────────────────────
+    def _deselect_all_btns(self):
+        for btn in self._mod_btns:   btn.setChecked(False)
+        for btn in self._door_btns:  btn.setChecked(False)
+        for btn in self._cmt_btns:   btn.setChecked(False)
+        for btn in self._clt_btns:   btn.setChecked(False)
+
     def _pick_modular(self, n: int):
-        """Select a Modular button and deselect all door buttons."""
         self._diag_mode   = 'modular'
         self._num_modules = n
+        self._deselect_all_btns()
         for i, btn in enumerate(self._mod_btns, 1):
             btn.setChecked(i == n)
-        for btn in self._door_btns:
-            btn.setChecked(False)
+        self.spn_circuits.setEnabled(True)
 
     def _pick_door(self, n: int):
-        """Select a door-count button and deselect all modular buttons."""
         self._diag_mode = 'door'
         self._num_doors = n
-        for btn in self._mod_btns:
-            btn.setChecked(False)
+        self._deselect_all_btns()
         for i, btn in enumerate(self._door_btns, 1):
             btn.setChecked(i == n)
+        self.spn_circuits.setEnabled(True)
+
+    def _pick_cassette_mt(self, n: int):
+        self._diag_mode     = 'cassette_mt'
+        self._num_cassettes = n
+        self._deselect_all_btns()
+        for i, btn in enumerate(self._cmt_btns, 1):
+            btn.setChecked(i == n)
+        self.spn_circuits.setEnabled(False)
+
+    def _pick_cassette_lt(self, n: int):
+        self._diag_mode     = 'cassette_lt'
+        self._num_cassettes = n
+        self._deselect_all_btns()
+        for i, btn in enumerate(self._clt_btns, 1):
+            btn.setChecked(i == n)
+        self.spn_circuits.setEnabled(False)
 
     def _add_target_row(self, t: dict = None):
         r = self.tbl_targets.rowCount()
@@ -375,6 +433,10 @@ class TestRequestDialog(QDialog):
         saved_mode = topo.get('mode', 'modular')
         if saved_mode == 'door':
             self._pick_door(int(topo.get('num_doors', 3) or 3))
+        elif saved_mode == 'cassette_mt':
+            self._pick_cassette_mt(int(topo.get('num_cassettes', 1) or 1))
+        elif saved_mode == 'cassette_lt':
+            self._pick_cassette_lt(int(topo.get('num_cassettes', 1) or 1))
         else:
             self._pick_modular(int(topo.get('modules', 3) or 3))
         self.spn_circuits.setValue(int(topo.get('circuits_per_coil', 6) or 6))
@@ -428,6 +490,7 @@ class TestRequestDialog(QDialog):
             'mode': self._diag_mode,
             'modules': self._num_modules,
             'num_doors': self._num_doors,
+            'num_cassettes': self._num_cassettes,
             'circuits_per_coil': self.spn_circuits.value(),
             'condenser_cooling': self.cmb_cooling.currentText(),
             'case_type': self.cmb_case_type.currentText(),
@@ -488,8 +551,13 @@ class TestRequestDialog(QDialog):
         dm.diagram_model.update(model)
         dm.diagram_model_changed.emit()
         topo = self.request.get('topology', {})
-        if topo.get('mode') == 'door':
+        mode = topo.get('mode', 'modular')
+        if mode == 'door':
             layout_desc = f"{topo.get('num_doors')} door(s)"
+        elif mode == 'cassette_mt':
+            layout_desc = f"{topo.get('num_cassettes')} cassette(s) MT"
+        elif mode == 'cassette_lt':
+            layout_desc = f"{topo.get('num_cassettes')} cassette(s) LT"
         else:
             layout_desc = f"{topo.get('modules')} module(s)"
         QMessageBox.information(

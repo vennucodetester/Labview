@@ -103,14 +103,53 @@ class BaseComponentItem(QGraphicsRectItem):
             for port in self.ports.values():
                 port.hide()
 
-        # Decorative rect — colored box with label, no ports, behind refrigerant items
-        if component_data.get('type') == 'DecorativeRect':
+        # LabeledBox — dark box with centered label, inlet+outlet ports (cassette components)
+        if component_data.get('type') == 'LabeledBox':
+            props = component_data.get('properties', {})
+            lbl_text = props.get('label', component_data.get('type', ''))
+            if simple:
+                for port in self.ports.values():
+                    port.hide()
+            if simple and lbl_text:
+                w = size['width']; h = size['height']
+                self.label.setHtml(
+                    f"<div align='center' style='color:white;font-family:sans-serif;"
+                    f"font-size:10pt;'>{lbl_text.replace(chr(10), '<br>')}</div>")
+                self.label.setTextWidth(w)
+                self.label.setPos(0, (h - self.label.boundingRect().height()) / 2)
+
+        # AirArrow — tiny arrow glyph, no fill, no label, no ports
+        elif component_data.get('type') == 'AirArrow':
+            props = component_data.get('properties', {})
+            direction = props.get('direction', 'up')
+            self.setBrush(QBrush(Qt.GlobalColor.transparent))
+            self.setPen(QPen(Qt.GlobalColor.transparent))
+            self.label.hide()
+            w = size.get('width', 10); h = size.get('height', 10)
+            _ap = QPainterPath()
+            if direction == 'up':
+                _ap.moveTo(w/2, h); _ap.lineTo(w/2, 0)
+                _ap.lineTo(w/2 - 5, 5); _ap.moveTo(w/2, 0); _ap.lineTo(w/2 + 5, 5)
+            else:
+                _ap.moveTo(w/2, 0); _ap.lineTo(w/2, h)
+                _ap.lineTo(w/2 - 5, h - 5); _ap.moveTo(w/2, h); _ap.lineTo(w/2 + 5, h - 5)
+            _ai = QGraphicsPathItem(_ap, self)
+            _ai.setPen(QPen(QColor('#555555'), 2))
+            self.setZValue(-6)
+
+        # Decorative rect — colored box with centered label, no ports
+        elif component_data.get('type') == 'DecorativeRect':
             props = component_data.get('properties', {})
             self.setBrush(QBrush(QColor(props.get('bg_color', '#E0E0E0'))))
             self.setPen(QPen(QColor('#000000'), 1))
-            self.label.setPlainText(props.get('label', ''))
-            self.label.setDefaultTextColor(QColor(props.get('text_color', '#000000')))
-            self.label.setPos(5, 5)
+            lbl_text = props.get('label', '')
+            w = size['width']; h = size['height']
+            txt_color = props.get('text_color', '#000000')
+            self.label.setHtml(
+                f"<div align='center' style='color:{txt_color};font-family:sans-serif;"
+                f"font-size:10pt;'>{lbl_text.replace(chr(10), '<br>')}</div>")
+            self.label.setTextWidth(w)
+            self.label.setPos(0, max(0, (h - self.label.boundingRect().height()) / 2))
             self.setZValue(-5)
 
         # Boundary — dashed rect outline with label, furthest behind

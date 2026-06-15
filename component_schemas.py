@@ -379,6 +379,28 @@ SCHEMAS = {
         "zones": []
     },
 
+    "LabeledBox": {
+        "properties": {
+            "label": {"type": "string", "default": ""},
+            "circuit_label": {"type": "enum", "default": "None",
+                              "options": ["None", "Left", "Center", "Right"]}
+        },
+        "ports": [
+            {"name": "inlet",  "type": "in",  "fluid_state": "any", "pressure_side": "any", "position": [0.5, 0]},
+            {"name": "outlet", "type": "out", "fluid_state": "any", "pressure_side": "any", "position": [0.5, 1]}
+        ],
+        "zones": []
+    },
+
+    "AirArrow": {
+        "properties": {
+            "direction": {"type": "string", "default": "up"},
+            "circuit_label": {"type": "enum", "default": "None", "options": ["None"]}
+        },
+        "ports": [],
+        "zones": []
+    },
+
     "DecorativeRect": {
         "properties": {
             "bg_color":   {"type": "string", "default": "#E0E0E0"},
