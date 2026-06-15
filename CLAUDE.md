@@ -542,6 +542,57 @@ From `processed_df` (computed by Calculations tab):
 - **"Exclude defrost" checkbox** in Calculations control row → `_apply_defrost_exclusion()`: drops rows where |DP−SP| ≤ 10 psi before batch processing
 - New perf columns added to reindex whitelist (`_perf_cols` in `run_calculation`) and to the calculation summary tables (shared + cassette)
 
+### Session 13 — Canonical Sensor Naming + Auto-Map (2026-06-15)
+
+**The problem:** Each CSV has ~150 columns; manual mapping = 150 clicks. Worse, generated diagrams had no off-diagram sensor slots (Ambient/Walls/Electrical), so wall temps and electrical sensors had no home.
+
+**New file: `sensor_canonical.py`** — Pure function `canonical_for_port(comp_type, props, port, unit_tag='')` → `(canonical_id, human_label)`. Stable ASTM-style naming across all 7 case families:
+- Refrigeration: `T_suc.in`, `T_disc.out`, `P_suc`, `P_disc`, `T_cond.in/out`, `T_w.in/out`, `gpm_w`, `T_txv.{lh|ctr|rh}.in/bulb`, `T_dist.{tag}.in/out.{N}`, `T_coil.{tag}.in/out.{N}`
+- Air arrays (dynamic N): `T_air.disc.s{N}`, `T_air.sec.s{N}`, `T_air.ret.s{N}` (curtain types `Primary/Secondary/Return` also dispatch as role_key prefixes)
+- Fan: `T_air.fan_{in|off}.{tag}.{LE|RE}` (2-sensor) or `.s{N}` (more)
+- Product sims: `T_prod.{row_id}.{col_id}.{r|f}` — rows `top/r2/r3/.../btm` from `shelf_rows`; cols `LE/LE48/RE48/RE` (4-col) or `LE/Ctr/RE` (3-col), with `col_distances` template override
+- Cassette unit suffix: `.u1`, `.u2` everywhere (in addition to circuit-label tags)
+- `resolve_canonical_from_role_key(model, role_key)` handles ALL role_key shapes: 3-part `Type.cid.port`, 2-part legacy `cid.port` (looks up type), curtain-type prefix, `sensorbox.boxid.sensor_id`, and `custom_xxx` returns None
+
+**Auto-added sensor boxes** (in `diagram_from_request.py:_ensure_canonical_sensor_boxes`): every generated diagram now ships with two canonical boxes:
+- `box_ambient_walls` — 9 slots: `T_amb.dry.a/b`, `T_amb.wet`, `T_wall.front/rear/left/right`, `T_ceil`, `T_evap_misc`
+- `box_electrical_system` — cassette-aware via `electrical_system_slots(n_compressors)`: `W_case`, `A_case`, `V_case`, `W_fan`, `A_fan`, `W_aswt`, `A_aswt`, `W_frame`, `A_frame`, `t_run`, `f_defrost`, `f_alwaysoff`, `m_dot_meas`, `T_liq.main`, and per-compressor `W_comp.uN`/`A_comp.uN`/`V_comp.uN`
+- Slot IDs ARE the canonical names; `_looks_like_canonical()` recognizes them and returns directly without label-pattern matching
+
+**Alias DB** (`library/sensor_aliases/seed.json` + `learned.json`): 179 canonicals, 420+ aliases seeded by walking all 7 historical configs' `sensor_roles` → CSV name pairs. `learned.json` grows every time `map_sensor_to_role` is called — confirmed mappings save the CSV name as a new alias for that canonical.
+
+**Auto-map on CSV load** (`data_manager.auto_map_csv_to_canonical`): after `load_csv` ingests new columns, walks them against `_load_alias_db()` (seed + learned). Exact match → auto-map; normalized match (`normalize_for_match` strips spaces/punctuation/case) → auto-map; unknown → user maps once and it's learned.
+- **96% auto-map rate** on ID5SL12 (142/147 CSV columns). The 5 misses are all computed/derived (S.H., Liqcond, AVG Prod Temp) which are calc-engine outputs, not raw sensors.
+
+**Role-key enumeration** (`data_manager._enumerate_diagram_role_keys`): yields every possible role on the current diagram, including DYNAMIC ports not in static schema — ShelvingGrid (`sensor_r{0..R-1}_{top|bottom}_c{0..C-1}`), Fan (`sensor_{0..N-1}`), AirSensorArray (both `{Curtain}Air.cid.{i}` and `AirSensorArray.cid.{i}` forms), plus sensor-box slots.
+
+**Tooltip on dots** (`diagram_widget._add_role_dot`): shows `<b>{canonical_id}</b><br>{human_label}<br>Mapped: {csv_name}` (or "Unmapped") + click hints. Falls back to legacy port tooltip when canonical resolution fails.
+
+**Files added/changed this session:**
+- NEW: `sensor_canonical.py` (~280 lines)
+- NEW: `library/sensor_aliases/seed.json` (179 canonicals)
+- NEW: `library/sensor_aliases/learned.json` (grows over time)
+- `data_manager.py`: `auto_map_csv_to_canonical()`, `_enumerate_diagram_role_keys()`, `_load_alias_db()`, `_save_learned_alias()`, alias save on `map_sensor_to_role`
+- `diagram_from_request.py`: `_ensure_canonical_sensor_boxes()` injected into both template and reduction paths
+- `diagram_widget.py`: tooltip rewrite to lead with canonical + human
+- `component_schemas.py`: added SP/DP/RPM sensor ports to Compressor (earlier in session)
+
+**One-shot seed scripts (run when alias DB needs refresh):**
+```python
+# Inline in any debug session
+from sensor_canonical import resolve_canonical_from_role_key
+from collections import defaultdict
+import json, os
+aliases = defaultdict(set)
+for fn in os.listdir(r'C:\Users\silam\OneDrive\Documents\Lab viewer\2.0\Config'):
+    with open(os.path.join(CONFIG_DIR, fn)) as f: cfg = json.load(f)
+    dm = cfg.get('diagramModel', {})
+    for rk, csv in (dm.get('sensor_roles') or {}).items():
+        res = resolve_canonical_from_role_key(dm, rk)
+        if res: aliases[res[0]].add(csv.strip())
+# Then dump to library/sensor_aliases/seed.json
+```
+
 ---
 
 ## 11. Quick Syntax Check

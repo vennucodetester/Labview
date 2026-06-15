@@ -429,6 +429,15 @@ _BOX_LABEL_PATTERNS = [
 ]
 
 
+def _looks_like_canonical(s: str) -> bool:
+    """A canonical ID starts with one of the known prefixes (T_, P_, W_, A_,
+    V_, t_, f_, m_, gpm, rpm) and contains only safe characters."""
+    if not s:
+        return False
+    import re
+    return bool(re.match(r'^(T_|P_|W_|A_|V_|t_|f_|m_|gpm|rpm)[A-Za-z0-9._]*$', s))
+
+
 def _canonical_from_box_label(label: str) -> Optional[Tuple[str, str]]:
     """Match a user-entered sensor box label to a canonical slot."""
     if not label:

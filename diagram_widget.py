@@ -594,6 +594,11 @@ class DiagramWidget(QWidget):
         main_layout.addWidget(self.view)
         
         self.setAcceptDrops(True)
+        
+    def _import_mappings_from_config(self):
+        """Placeholder for mapping import functionality."""
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.information(self, "Not Implemented", "Import functionality is not fully implemented yet.")
     
     def populate_toolbar(self):
         """Populate toolbar with dropdown menus."""

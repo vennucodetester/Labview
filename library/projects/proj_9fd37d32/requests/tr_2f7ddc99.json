@@ -11,11 +11,11 @@
     "system_type": "shared",
     "mode": "modular",
     "modules": 3,
-    "num_doors": 5,
+    "num_doors": 3,
     "num_cassettes": 1,
     "circuits_per_coil": 6,
     "condenser_cooling": "Air",
-    "case_type": "Doored",
+    "case_type": "Open",
     "shelf_rows": 6,
     "doored": false
   },

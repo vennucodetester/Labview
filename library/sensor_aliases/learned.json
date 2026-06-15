@@ -1,0 +1,92 @@
+{
+  "T_txv.lh.in": [
+    "Left TXV Inlet"
+  ],
+  "T_txv.lh.bulb": [
+    "Left TXV Bulb"
+  ],
+  "T_coil.lh.in.1": [
+    "Left Coil Inlet 1"
+  ],
+  "T_coil.lh.in.2": [
+    "Left Coil Inlet 2"
+  ],
+  "T_coil.lh.in.3": [
+    "Left Coil Inlet 3"
+  ],
+  "T_coil.lh.in.4": [
+    "Left Coil Inlet 4"
+  ],
+  "T_coil.lh.in.5": [
+    "Left Coil Inlet 5"
+  ],
+  "T_coil.lh.in.6": [
+    "Left Coil Inlet 6"
+  ],
+  "T_txv.ctr.in": [
+    "CTR TXV Inlet"
+  ],
+  "T_txv.ctr.bulb": [
+    "CTR TXV Bulb"
+  ],
+  "T_coil.ctr.in.1": [
+    "CTR Coil Inlet 1"
+  ],
+  "T_coil.ctr.in.2": [
+    "CTR Coil Inlet 2"
+  ],
+  "T_coil.ctr.in.3": [
+    "CTR Coil Inlet 3"
+  ],
+  "T_coil.ctr.in.4": [
+    "CTR Coil Inlet 4"
+  ],
+  "T_coil.ctr.in.5": [
+    "CTR Coil Inlet 5"
+  ],
+  "T_coil.ctr.in.6": [
+    "CTR Coil Inlet 6"
+  ],
+  "T_txv.rh.in": [
+    "Right TXV Inlet"
+  ],
+  "T_txv.rh.bulb": [
+    "Right TXV Bulb"
+  ],
+  "T_coil.rh.in.1": [
+    "Right Coil Inlet 1"
+  ],
+  "T_coil.rh.in.2": [
+    "Right Coil Inlet 2"
+  ],
+  "T_coil.rh.in.3": [
+    "Right Coil Inlet 3"
+  ],
+  "T_coil.rh.in.4": [
+    "Right Coil Inlet 4"
+  ],
+  "T_coil.rh.in.5": [
+    "Right Coil Inlet 5"
+  ],
+  "T_coil.rh.in.6": [
+    "Right Coil Inlet 6"
+  ],
+  "T_cond.in": [
+    "Ref Temp in HeatX"
+  ],
+  "T_cond.out": [
+    "Ref Temp out HeatX"
+  ],
+  "T_disc.out": [
+    "Discharge line from Comp"
+  ],
+  "T_suc.in": [
+    "Suction line into Comp"
+  ],
+  "P_suc": [
+    "Suction Pressure"
+  ],
+  "P_disc": [
+    "Discharge Pressure"
+  ]
+}
