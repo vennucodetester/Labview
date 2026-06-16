@@ -980,6 +980,132 @@ def build_bare_minimum_diagram(request: dict) -> dict:
             'properties': {'label': 'Doors Diagram', 'stroke_color': '#AAAAAA'},
         }
 
+    # ══════════════════════════════════════════════════════════════════════
+    #  SENSOR-BEARING COMPONENTS (so every mappable spot shows as a dot)
+    # ══════════════════════════════════════════════════════════════════════
+    air_sensor_count = int(topo.get('air_sensors_per_curtain',
+                                    topo.get('air_sensor_count', 11)) or 11)
+
+    # --- 1) AirSensorArrays — replace decorative air rects with mappable ones
+    #         (Primary Discharge / Secondary / Return depending on mode)
+    air_block_w = combined_w
+    air_block_x = left_edge
+    if is_cassette:
+        # Cassette: Return Air above fans, Primary Discharge below
+        components['air_return'] = {
+            'type': 'AirSensorArray',
+            'position': [air_block_x, ret_air_y],
+            'size': {'width': 100, 'height': 60},
+            'properties': {'curtain_type': 'Return', 'module_position': 'Left',
+                           'sensor_count': air_sensor_count,
+                           'block_width': air_block_w, 'block_height': 30},
+        }
+        components['air_primary'] = {
+            'type': 'AirSensorArray',
+            'position': [air_block_x, pri_air_y],
+            'size': {'width': 100, 'height': 60},
+            'properties': {'curtain_type': 'Primary', 'module_position': 'Left',
+                           'sensor_count': air_sensor_count,
+                           'block_width': air_block_w, 'block_height': 30},
+        }
+    else:
+        components['air_primary'] = {
+            'type': 'AirSensorArray',
+            'position': [air_block_x, pri_air_y],
+            'size': {'width': 100, 'height': 60},
+            'properties': {'curtain_type': 'Primary', 'module_position': 'Left',
+                           'sensor_count': air_sensor_count,
+                           'block_width': air_block_w, 'block_height': 30},
+        }
+        if mode == 'modular':
+            components['air_secondary'] = {
+                'type': 'AirSensorArray',
+                'position': [air_block_x, sec_air_y if 'sec_air_y' in dir() else pri_air_y + 30],
+                'size': {'width': 100, 'height': 60},
+                'properties': {'curtain_type': 'Secondary', 'module_position': 'Left',
+                               'sensor_count': air_sensor_count,
+                               'block_width': air_block_w, 'block_height': 30},
+            }
+        components['air_return'] = {
+            'type': 'AirSensorArray',
+            'position': [air_block_x, ret_air_y],
+            'size': {'width': 100, 'height': 60},
+            'properties': {'curtain_type': 'Return', 'module_position': 'Left',
+                           'sensor_count': air_sensor_count,
+                           'block_width': air_block_w, 'block_height': 30},
+        }
+
+    # --- 2) ShelvingGrid for product simulators (below airflow area)
+    shelf_block_y = air_bottom_y + 80
+    if mode == 'modular':
+        cols_for_grid = num_modules
+        shelving_type = 'Modular'
+        door_cnt = num_modules
+    else:
+        cols_for_grid = count
+        shelving_type = 'Non-Modular'
+        door_cnt = count
+    shelf_w_each = max(120, int(combined_w / max(1, cols_for_grid + 1)))
+    components['shelves'] = {
+        'type': 'ShelvingGrid',
+        'position': [air_block_x, shelf_block_y],
+        'size': {'width': 100, 'height': 60},
+        'properties': {
+            'shelving_type': shelving_type,
+            'module_count': cols_for_grid,
+            'door_count': door_cnt,
+            'shelf_rows': shelf_rows,
+            'shelf_width': shelf_w_each,
+            'shelf_height': 40,
+            'row_gap': 15,
+        },
+    }
+
+    # --- 3a) Fans (Air Inlet + Air Outlet) per module/door — for fan-air dots
+    if mode == 'modular':
+        fan_targets = list(zip(mod_xs, mod_lbs))
+    else:
+        slice_w = combined_w / max(1, count)
+        fan_targets = [(left_edge + slice_w / 2 + i * slice_w,
+                        (f'Unit {i+1}' if is_cassette else f'Door {i+1}'))
+                       for i in range(count)]
+    for i, (fx, lb) in enumerate(fan_targets):
+        cl = lb or 'None'
+        components[f'fan_in_{i}'] = {
+            'type': 'Fan',
+            'position': [fx - 20, MERGE_Y + 15],
+            'size': {'width': 40, 'height': 30},
+            'properties': {'rpm': 1200, 'air_flow_type': 'Air Inlet',
+                           'sensor_count': 2, 'circuit_label': cl},
+        }
+        components[f'fan_off_{i}'] = {
+            'type': 'Fan',
+            'position': [fx - 20, Y_EVAP - 35],
+            'size': {'width': 40, 'height': 30},
+            'properties': {'rpm': 1200, 'air_flow_type': 'Air Outlet',
+                           'sensor_count': 2, 'circuit_label': cl},
+        }
+
+    # --- 3) SensorBulbs near each TXV (one per circuit / unit)
+    if not is_cassette:
+        for i, (mx, lb) in enumerate(zip(mod_xs, mod_lbs)):
+            cl = lb or 'None'
+            components[f'bulb_{i}'] = {
+                'type': 'SensorBulb',
+                'position': [mx + TXV_W // 2 + 10, Y_TXV],
+                'size': {'width': 40, 'height': 30},
+                'properties': {'label': '', 'circuit_label': cl},
+            }
+    else:
+        for i in range(count):
+            cx_b = (left_edge + (i + 0.5) * 240)
+            components[f'bulb_{i}'] = {
+                'type': 'SensorBulb',
+                'position': [cx_b + TXV_W // 2 + 10, Y_TXV],
+                'size': {'width': 40, 'height': 30},
+                'properties': {'label': '', 'circuit_label': f'Unit {i+1}'},
+            }
+
     # ── Tag all components and pipes ──────────────────────────────────────
     for p in pipes.values():
         p['_simple_mode'] = True
@@ -988,7 +1114,7 @@ def build_bare_minimum_diagram(request: dict) -> dict:
     for c in components.values():
         c['_simple_mode'] = True
 
-    return {
+    model = {
         'components': components,
         'pipes':      pipes,
         'sensor_roles':    {},
@@ -999,3 +1125,6 @@ def build_bare_minimum_diagram(request: dict) -> dict:
         '_generated_from': (f'bare_minimum ({mode}, count={count}, '
                             f'{num_circuits} circuits/coil)'),
     }
+    # --- 4) Auto-add the 2 canonical sensor boxes (Ambient/Walls + Electrical)
+    _ensure_canonical_sensor_boxes(model, topo)
+    return model
