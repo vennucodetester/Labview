@@ -288,21 +288,19 @@ def canonical_for_fan(props: Dict, port: str, unit_tag: str = '') -> Optional[Tu
 # ── Master dispatch ─────────────────────────────────────────────────────────
 
 _DISPATCH = {
-    'Compressor':       canonical_for_compressor,
-    'Condenser':        canonical_for_condenser,
-    'TXV':              canonical_for_txv,
-    'SensorBulb':       canonical_for_sensorbulb,
-    'Distributor':      canonical_for_distributor,
-    'SplitterManifold': canonical_for_distributor,   # bare-minimum uses these
-    'CombinerManifold': canonical_for_distributor,
-    'Evaporator':       canonical_for_evaporator,
-    'AirSensorArray':   canonical_for_air_array,
-    'PrimaryAir':       canonical_for_air_array,    # role_key alias
-    'SecondaryAir':     canonical_for_air_array,    # role_key alias
-    'ReturnAir':        canonical_for_air_array,    # role_key alias
-    'ShelvingGrid':     canonical_for_shelving,
-    'Junction':         canonical_for_junction,
-    'Fan':              canonical_for_fan,
+    'Compressor':      canonical_for_compressor,
+    'Condenser':       canonical_for_condenser,
+    'TXV':             canonical_for_txv,
+    'SensorBulb':      canonical_for_sensorbulb,
+    'Distributor':     canonical_for_distributor,
+    'Evaporator':      canonical_for_evaporator,
+    'AirSensorArray':  canonical_for_air_array,
+    'PrimaryAir':      canonical_for_air_array,   # role_key alias
+    'SecondaryAir':    canonical_for_air_array,   # role_key alias
+    'ReturnAir':       canonical_for_air_array,   # role_key alias
+    'ShelvingGrid':    canonical_for_shelving,
+    'Junction':        canonical_for_junction,
+    'Fan':             canonical_for_fan,
 }
 
 
@@ -493,7 +491,6 @@ def electrical_system_slots(n_compressors: int = 1) -> list:
             ('W_comp',   'Compressor Watts'),
             ('A_comp',   'Compressor Amps'),
             ('V_comp',   'Compressor Voltage'),
-            ('W_comp.total', 'Total Compressor Watts'),
         ]
     else:
         for u in range(1, n_compressors + 1):
@@ -501,15 +498,7 @@ def electrical_system_slots(n_compressors: int = 1) -> list:
                 (f'W_comp.u{u}', f'Compressor {u} Watts'),
                 (f'A_comp.u{u}', f'Compressor {u} Amps'),
                 (f'V_comp.u{u}', f'Compressor {u} Voltage'),
-                (f'W_comp.u{u}.total', f'Total Compressor {u} Watts'),
             ]
-    base += [
-        ('W_case.total', 'Total Case Watts'),
-        ('A_case.total', 'Total Case Amps'),
-        ('W_fan.total',  'Total Evap Fan Watts'),
-        ('W_aswt.total', 'Total Anti-Sweat Watts'),
-        ('W_frame.total','Total Frame Heater Watts'),
-    ]
     return base
 
 
