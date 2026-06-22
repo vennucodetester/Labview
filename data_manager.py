@@ -3,7 +3,9 @@ from pandas.api.types import is_datetime64_any_dtype
 import json
 import base64
 import os
+import re
 import uuid
+import copy
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtGui import QPixmap
 from mapping_dialog import MappingDialog
@@ -73,6 +75,17 @@ class DataManager(QObject):
         # Preserve original config headers and their mapping to current CSV headers
         self.original_config_sensor_list = []
         self.config_label_mapping = {}
+        self.last_auto_map_report = {
+            "csv_columns": 0,
+            "mapped": 0,
+            "expected_canonical": 0,
+            "unmapped_csv": [],
+            "unmapped_expected": [],
+            "ignored_csv": [],
+            "known_but_no_role": [],
+            "known_but_filled": [],
+            "mapped_columns": {},
+        }
 
         self.time_range = 'All Data'  # Options: '1 Hour', '8 Hours', '24 Hours', '48 Hours', 'All Data', 'Custom'
         self.value_aggregation = 'Average'  # Options: 'Average', 'Maximum', 'Minimum'
@@ -683,7 +696,128 @@ class DataManager(QObject):
             return self.csv_data.columns.tolist()[1:]
         elif self.config_sensor_list:
             return self.config_sensor_list
+        expected = self.get_expected_sensor_rows()
+        if expected:
+            return [row['default_label'] for row in expected]
         return []
+
+    def get_expected_sensor_rows(self, include_disabled: bool = False) -> list:
+        """Return the diagram's expected sensor dots as table-ready rows.
+
+        These rows exist before any CSV is loaded.  They are the lab-facing
+        "planned sensors" generated from the process diagram, with any mapped
+        CSV/lab label overlaid when old data is loaded.
+        """
+        try:
+            from sensor_canonical import resolve_canonical_from_role_key
+        except Exception:
+            return []
+
+        if not (self.diagram_model.get('components') or self.diagram_model.get('custom_sensors')
+                or self.diagram_model.get('sensor_boxes')):
+            return []
+
+        try:
+            self.populate_sensor_points()
+        except Exception:
+            pass
+
+        roles = self.diagram_model.get('sensor_roles') or {}
+        rows = []
+        seen = set()
+        for role_key in self._enumerate_diagram_role_keys():
+            if role_key in seen:
+                continue
+            seen.add(role_key)
+            enabled = self.is_sensor_point_enabled(role_key)
+            if not include_disabled and not enabled:
+                continue
+            resolved = resolve_canonical_from_role_key(self.diagram_model, role_key)
+            if not resolved:
+                continue
+            canonical, human_label = resolved
+            default_label = self._default_lab_label(canonical, human_label)
+            mapped_label = roles.get(role_key)
+            rows.append({
+                "role_key": role_key,
+                "canonical": canonical,
+                "default_label": default_label,
+                "human_label": human_label or default_label,
+                "lab_label": mapped_label or default_label,
+                "mapped_label": mapped_label,
+                "group": self._group_for_canonical(canonical),
+                "enabled": enabled,
+            })
+
+        rows.sort(key=lambda r: (r["group"], self._sensor_sort_key(r["canonical"], r["default_label"])))
+        return rows
+
+    def get_expected_sensor_groups(self, include_disabled: bool = False) -> dict:
+        groups = {}
+        for row in self.get_expected_sensor_rows(include_disabled=include_disabled):
+            groups.setdefault(row["group"], []).append(row["default_label"])
+        return groups
+
+    @staticmethod
+    def _default_lab_label(canonical: str, human_label: str) -> str:
+        """Human-facing default label the lab can type into the DAQ."""
+        label = (human_label or canonical or '').strip()
+        # Keep generated labels short enough for DAQ headers and PDF tables.
+        for suffix in (" Temp", " Temperature"):
+            if label.endswith(suffix):
+                label = label[:-len(suffix)]
+        return label or canonical
+
+    @staticmethod
+    def _group_for_canonical(canonical: str) -> str:
+        if canonical.startswith(("T_amb", "T_wall", "T_ceil")):
+            return "Ambient & Walls"
+        if canonical.startswith(("W_", "A_", "V_", "t_", "f_", "m_", "gpm", "rpm")):
+            return "Electrical & System"
+        if canonical.startswith("T_air.disc."):
+            return "Air - Discharge"
+        if canonical.startswith("T_air.sec."):
+            return "Air - Secondary"
+        if canonical.startswith("T_air.ret."):
+            return "Air - Return"
+        if canonical.startswith("T_air.fan_in."):
+            return "Evap Fan Air In"
+        if canonical.startswith("T_air.fan_off."):
+            return "Evap Fan Air Off"
+        if canonical.startswith("T_air.cond_in."):
+            return "Condenser Air In"
+        if canonical.startswith("T_air.cond_out."):
+            return "Condenser Air Out"
+        if canonical.startswith("T_prod."):
+            return "Product Simulators"
+        if canonical.startswith("T_door."):
+            return "Doors"
+        if canonical.startswith("T_mull."):
+            return "Mullions"
+        if canonical.startswith(("P_suc", "P_disc", "T_suc", "T_disc")):
+            return "Compressor"
+        if canonical.startswith(("T_cond", "T_w")):
+            return "Condenser"
+        if canonical.startswith("T_txv."):
+            parts = canonical.split(".")
+            return f"TXV - {parts[1].upper()}" if len(parts) > 1 else "TXV"
+        if canonical.startswith("T_dist."):
+            parts = canonical.split(".")
+            return f"Distributor - {parts[1].upper()}" if len(parts) > 1 else "Distributor"
+        if canonical.startswith("T_coil."):
+            parts = canonical.split(".")
+            return f"Coil - {parts[1].upper()}" if len(parts) > 1 else "Coil"
+        if canonical.startswith("calc.SH"):
+            return "Calculated - Superheat"
+        if canonical.startswith("calc.SC"):
+            return "Calculated - Subcooling"
+        return "Other Sensors"
+
+    @staticmethod
+    def _sensor_sort_key(canonical: str, label: str):
+        import re
+        parts = re.split(r'(\d+)', canonical or label or '')
+        return [int(p) if p.isdigit() else p.lower() for p in parts]
     
     def update_refrigerant(self, refrigerant: str):
         """Updates the refrigerant type and notifies listeners."""
@@ -1038,21 +1172,14 @@ class DataManager(QObject):
             return filtered_data
 
     def get_sensor_value(self, sensor_name):
-        """Returns the aggregated value for a sensor from filtered CSV data based on the aggregation method."""
+        """Return the average value for a sensor over the selected time range."""
         filtered_data = self.get_filtered_data()
         
         if filtered_data is not None and sensor_name in filtered_data.columns:
             sensor_data = filtered_data[sensor_name].dropna()
             
             if not sensor_data.empty:
-                if self.value_aggregation == 'Average':
-                    return sensor_data.mean()
-                elif self.value_aggregation == 'Maximum':
-                    return sensor_data.max()
-                elif self.value_aggregation == 'Minimum':
-                    return sensor_data.min()
-                else:
-                    return sensor_data.iloc[-1]  # Fallback to last value
+                return sensor_data.mean()
         
         return None
 
@@ -1396,11 +1523,22 @@ class DataManager(QObject):
         Returns count of newly mapped columns.
         """
         from sensor_canonical import (resolve_canonical_from_role_key,
-                                      normalize_for_match)
+                                      normalize_for_match,
+                                      _canonical_from_box_label)
         if not csv_columns:
+            self.last_auto_map_report = self._build_auto_map_report([], {}, {}, {})
             return 0
 
         aliases = self._load_alias_db()
+        for row in self.get_expected_sensor_rows(include_disabled=True):
+            canonical = row.get('canonical')
+            if not canonical:
+                continue
+            aliases.setdefault(canonical, set()).update({
+                row.get('default_label') or '',
+                row.get('human_label') or '',
+                row.get('canonical') or '',
+            })
         # Build reverse index: normalized alias -> canonical
         rev_exact = {}
         rev_norm = {}
@@ -1419,29 +1557,277 @@ class DataManager(QObject):
         # Walk CSV columns
         mapped_n = 0
         already_mapped = set((self.diagram_model.get('sensor_roles') or {}).values())
+        column_results = {}
         for col in csv_columns:
             if col in already_mapped:
+                column_results[col] = {"status": "already_mapped"}
                 continue
-            canonical = rev_exact.get(col.strip()) or rev_norm.get(normalize_for_match(col))
+            box_res = _canonical_from_box_label(col)
+            box_canonical = box_res[0] if box_res else None
+            norm_col = normalize_for_match(col)
+            unit_specific = box_canonical and (
+                norm_col.startswith('u') or 'unit' in norm_col or norm_col.startswith('ps')
+                or re.search(r'(?:u|unit)\d+$', norm_col)
+            )
+            canonical = box_canonical if unit_specific else None
+            canonical = canonical or rev_exact.get(col.strip()) or rev_norm.get(norm_col)
             if not canonical:
+                canonical = box_canonical
+            if not canonical:
+                column_results[col] = {"status": "unknown"}
                 continue
             target_keys = canon_to_role_keys.get(canonical, [])
+            if not target_keys and canonical.startswith('T_prod.'):
+                created_key = self._ensure_product_sensor_dot(canonical)
+                if created_key:
+                    target_keys = [created_key]
+                    canon_to_role_keys[canonical] = target_keys
             if not target_keys:
+                column_results[col] = {
+                    "status": "known_but_no_role",
+                    "canonical": canonical,
+                }
                 continue
             # Find a role_key that's not already mapped
             current = self.diagram_model.get('sensor_roles') or {}
             free_key = next((k for k in target_keys if k not in current), None)
             if not free_key:
+                column_results[col] = {
+                    "status": "known_but_filled",
+                    "canonical": canonical,
+                    "role_keys": target_keys,
+                }
                 continue
             self.map_sensor_to_role(free_key, col)
             already_mapped.add(col)
             mapped_n += 1
+            column_results[col] = {
+                "status": "mapped",
+                "canonical": canonical,
+                "role_key": free_key,
+            }
 
+        self.last_auto_map_report = self._build_auto_map_report(
+            csv_columns, canon_to_role_keys, column_results, aliases)
         print(f"[AUTO_MAP] Auto-mapped {mapped_n} CSV columns from alias DB "
               f"(of {len(csv_columns)} columns, {len(canon_to_role_keys)} canonical roles on diagram)")
+        gaps = self.get_mapping_gaps()
+        if gaps.get('unmapped_csv_count') or gaps.get('unmapped_expected_count'):
+            print("[AUTO_MAP] Mapping gaps: "
+                  f"{gaps.get('unmapped_csv_count', 0)} CSV column(s) unknown, "
+                  f"{gaps.get('unmapped_expected_count', 0)} expected sensor dot(s) unmapped, "
+                  f"{gaps.get('known_but_no_role_count', 0)} known alias(es) with no dot on this diagram")
         if mapped_n:
             self.diagram_model_changed.emit()
         return mapped_n
+
+    def _ensure_product_sensor_dot(self, canonical: str) -> str | None:
+        """Create a missing product-sim custom dot from its canonical ID.
+
+        Generated diagrams include the common shelf anchors. CSVs can contain
+        additional physical positions (for example LE20). Add only the positions
+        that actually appear in the loaded file instead of pre-rendering every
+        historical possibility.
+        """
+        if not canonical or not canonical.startswith('T_prod.'):
+            return None
+        custom = self.diagram_model.setdefault('custom_sensors', {})
+        if canonical in custom:
+            return canonical
+
+        parts = canonical.split('.')
+        if len(parts) != 4:
+            return None
+        _, row_id, col_id, face = parts
+
+        comps = self.diagram_model.get('components') or {}
+        shelf_items = []
+        for cid, comp in comps.items():
+            if not str(cid).startswith('deco_shelf_'):
+                continue
+            pos = comp.get('position') or [0, 0]
+            size = comp.get('size') or {}
+            m = re.match(r'^deco_shelf_(\d+)_(\d+)$', str(cid))
+            if not m:
+                continue
+            shelf_items.append({
+                'col': int(m.group(1)),
+                'row': int(m.group(2)),
+                'x': float(pos[0]),
+                'y': float(pos[1]),
+                'w': float(size.get('width') or 0),
+                'h': float(size.get('height') or 0),
+            })
+        if not shelf_items:
+            return None
+
+        rows = sorted({s['row'] for s in shelf_items})
+        cols = sorted({s['col'] for s in shelf_items})
+        if not rows or not cols:
+            return None
+
+        row_map = {'top': 0, 'btm': rows[-1]}
+        for idx in range(1, rows[-1]):
+            row_map[f'r{idx + 1}'] = idx
+        if row_id not in row_map:
+            return None
+        row_idx = row_map[row_id]
+
+        row_shelves = [s for s in shelf_items if s['row'] == row_idx]
+        if not row_shelves:
+            return None
+        left_edge = min(s['x'] for s in row_shelves)
+        right_edge = max(s['x'] + s['w'] for s in row_shelves)
+        combined_w = right_edge - left_edge
+        count = len(cols)
+        mode = ((self.diagram_model.get('_topology') or {}).get('mode') or '').lower()
+        shelf_width_in = 48 if mode == 'modular' else 30
+        total_shelf_in = count * shelf_width_in
+
+        col_norm = col_id.lower()
+        if col_norm == 'le':
+            inches = 0
+        elif col_norm == 're':
+            inches = total_shelf_in
+        elif col_norm == 'ctr':
+            inches = total_shelf_in / 2
+        else:
+            m = re.match(r'^le(\d+)$', col_norm)
+            if m:
+                inches = float(m.group(1))
+            else:
+                m = re.match(r'^re(\d+)$', col_norm)
+                if m:
+                    inches = total_shelf_in - float(m.group(1))
+                else:
+                    m = re.match(r'^c(\d+)$', col_norm)
+                    if not m:
+                        return None
+                    denom = max(1, int(m.group(1)) + 1)
+                    inches = total_shelf_in * (int(m.group(1)) / denom)
+
+        inches = max(0, min(total_shelf_in, inches))
+        x = left_edge + combined_w * (inches / total_shelf_in if total_shelf_in else 0)
+        shelf = row_shelves[0]
+        y = shelf['y'] if face == 'r' else shelf['y'] + shelf['h']
+
+        custom[canonical] = {
+            'type': 'temperature',
+            'position': [x, y],
+            'label': canonical,
+            'display_side': 'above' if face == 'r' else 'below',
+        }
+        return canonical
+
+    @staticmethod
+    def _is_ignorable_csv_column(column_name: str) -> bool:
+        """Columns that are not raw physical sensor dots for mapping purposes."""
+        if column_name is None:
+            return True
+        name = str(column_name).strip()
+        if not name:
+            return True
+        low = name.lower()
+        if low in {'timestamp', 'date', 'time'}:
+            return True
+        if low.startswith('unnamed') or low.startswith('blank'):
+            return True
+        normalized = ''.join(ch for ch in low if ch.isalnum())
+        derived = {
+            'sh', 'she',
+            'evap', 'avgprodtemp', 'avgprodsimtemp',
+            'averageprodtemp', 'averageprodsimtemp',
+        }
+        return normalized in derived
+
+    def _build_auto_map_report(self, csv_columns, canon_to_role_keys,
+                               column_results, aliases) -> dict:
+        """Summarize auto-map coverage for UI/reporting and future learning."""
+        from sensor_canonical import resolve_canonical_from_role_key
+
+        csv_columns = [str(c) for c in (csv_columns or [])]
+        roles = self.diagram_model.get('sensor_roles') or {}
+        mapped_columns = {}
+        mapped_canonicals = set()
+        for role_key, sensor_name in roles.items():
+            res = resolve_canonical_from_role_key(self.diagram_model, role_key)
+            if not res:
+                continue
+            canonical = res[0]
+            mapped_canonicals.add(canonical)
+            mapped_columns[sensor_name] = {
+                "canonical": canonical,
+                "role_key": role_key,
+            }
+
+        ignored_csv = []
+        unmapped_csv = []
+        known_but_no_role = []
+        known_but_filled = []
+        for col in csv_columns:
+            if col in mapped_columns:
+                continue
+            info = column_results.get(col) or {}
+            status = info.get("status")
+            if self._is_ignorable_csv_column(col):
+                ignored_csv.append(col)
+            elif status == "known_but_no_role":
+                known_but_no_role.append({
+                    "csv": col,
+                    "canonical": info.get("canonical"),
+                })
+            elif status == "known_but_filled":
+                known_but_filled.append({
+                    "csv": col,
+                    "canonical": info.get("canonical"),
+                    "role_keys": info.get("role_keys") or [],
+                })
+            else:
+                unmapped_csv.append(col)
+
+        unmapped_expected = []
+        for canonical in sorted(canon_to_role_keys or {}):
+            if canonical not in mapped_canonicals:
+                unmapped_expected.append({
+                    "canonical": canonical,
+                    "role_keys": canon_to_role_keys.get(canonical) or [],
+                })
+
+        return {
+            "csv_columns": len(csv_columns),
+            "mapped": len(mapped_columns),
+            "expected_canonical": len(canon_to_role_keys or {}),
+            "unmapped_csv": unmapped_csv,
+            "unmapped_expected": unmapped_expected,
+            "ignored_csv": ignored_csv,
+            "known_but_no_role": known_but_no_role,
+            "known_but_filled": known_but_filled,
+            "mapped_columns": mapped_columns,
+            "alias_canonicals": len(aliases or {}),
+        }
+
+    def get_auto_map_report(self) -> dict:
+        """Return the most recent structured auto-map report."""
+        return copy.deepcopy(getattr(self, 'last_auto_map_report', {}) or {})
+
+    def get_mapping_gaps(self) -> dict:
+        """Compact counts/lists for UI status and audit messaging."""
+        report = getattr(self, 'last_auto_map_report', {}) or {}
+        unmapped_csv = report.get('unmapped_csv') or []
+        unmapped_expected = report.get('unmapped_expected') or []
+        known_but_no_role = report.get('known_but_no_role') or []
+        known_but_filled = report.get('known_but_filled') or []
+        return {
+            "unmapped_csv_count": len(unmapped_csv),
+            "unmapped_expected_count": len(unmapped_expected),
+            "ignored_csv_count": len(report.get('ignored_csv') or []),
+            "known_but_no_role_count": len(known_but_no_role),
+            "known_but_filled_count": len(known_but_filled),
+            "unmapped_csv": unmapped_csv,
+            "unmapped_expected": unmapped_expected,
+            "known_but_no_role": known_but_no_role,
+            "known_but_filled": known_but_filled,
+        }
 
     def _enumerate_diagram_role_keys(self):
         """Yield every role_key shape that exists on the current diagram —
@@ -1463,16 +1849,19 @@ class DataManager(QObject):
             for p in ports:
                 yield f"{ctype}.{cid}.{p}"
 
-            # ShelvingGrid: dynamic ports sensor_r{0..R-1}_{top|bottom}_c{0..C-1}
+            # ShelvingGrid: dynamic ports at physical grid intersections.
+            # Interior horizontal edges are shared, so only the first row has
+            # top ports; every shelf row contributes its bottom edge.
             if ctype == 'ShelvingGrid':
                 shelf_rows = int(props.get('shelf_rows', 6) or 6)
                 if props.get('shelving_type', 'Modular') == 'Modular':
                     cols_total = int(props.get('module_count', 3) or 3) + 1
                 else:
                     cols_total = int(props.get('door_count', 3) or 3) + 1
+                for col in range(cols_total):
+                    yield f"ShelvingGrid.{cid}.sensor_r0_top_c{col}"
                 for r in range(shelf_rows):
                     for col in range(cols_total):
-                        yield f"ShelvingGrid.{cid}.sensor_r{r}_top_c{col}"
                         yield f"ShelvingGrid.{cid}.sensor_r{r}_bottom_c{col}"
 
             # Fan: dynamic ports sensor_{0..N-1}
@@ -1494,6 +1883,11 @@ class DataManager(QObject):
         for bid, box in (self.diagram_model.get('sensor_boxes') or {}).items():
             for s in box.get('sensors', []) or []:
                 yield f"sensorbox.{bid}.{s.get('id')}"
+
+        # Free-position generated dots use their canonical id as the role key
+        # (for example shelf corners, fan probes, door/mullion probes).
+        for role_key in (self.diagram_model.get('custom_sensors') or {}).keys():
+            yield role_key
 
     # ── Sensor Points ─────────────────────────────────────────────────────────
 
@@ -2131,6 +2525,8 @@ class DataManager(QObject):
             sensor_names = list(self.csv_data.columns[1:])  # Exclude timestamp column
         elif self.config_sensor_list:
             sensor_names = [name for name in self.config_sensor_list if name != "Timestamp"]
+        else:
+            sensor_names = [row['default_label'] for row in self.get_expected_sensor_rows()]
         
         # Sanitize: Remove Unnamed columns before saving to config
         sensor_names = self._sanitize_sensor_list(sensor_names)
@@ -2215,6 +2611,10 @@ class DataManager(QObject):
         elif self.config_sensor_list:
             # Remove timestamp if it exists in config list
             all_sensors = set([name for name in self.config_sensor_list if name != "Timestamp"])
+        else:
+            expected_groups = self.get_expected_sensor_groups()
+            if expected_groups:
+                return expected_groups
         
         # Start with existing groups
         prepared_groups = {}

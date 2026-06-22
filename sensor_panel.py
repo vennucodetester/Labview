@@ -109,9 +109,7 @@ class SensorPanel(QWidget):
         _SPECIAL_NOTES = {12: ' (half day)', 24: ' (1 full day)', 48: ' (2 days)',
                           72: ' (3 days)', 96: ' (4 days)'}
         _TIME_ITEMS = [('All Data', 'Show all available data — no time restriction')]
-        for _h, _label in [(0.25, '15 minutes'), (0.5, '30 minutes'), (0.75, '45 minutes')]:
-            _TIME_ITEMS.append((str(_h), f'Last {_label} of data'))
-        for _h in range(1, 101):
+        for _h in range(1, 49):
             _note = _SPECIAL_NOTES.get(_h, '')
             _unit = 'hour' if _h == 1 else 'hours'
             _TIME_ITEMS.append((str(_h), f'Last {_h} {_unit} of data{_note}'))
@@ -226,7 +224,7 @@ class SensorPanel(QWidget):
             return
 
         # --- SENSOR ITEM CLICKED ---
-        sensor_name = item.text(0)
+        sensor_name = self._sensor_key_for_item(item)
         if column == 2:
             is_checked = item.checkState(2) == Qt.CheckState.Checked
             self.data_manager.set_sensor_graphed(sensor_name, is_checked)
@@ -248,8 +246,9 @@ class SensorPanel(QWidget):
         else:
             is_checked = state == Qt.CheckState.Checked.value
         
-        # Get all sensors
-        all_sensors = self.data_manager.get_sensor_list()
+        # Get all visible/planned sensors. In expected-table mode this returns
+        # mapped CSV labels when available, while keeping default labels visible.
+        all_sensors = self._visible_sensor_keys() or self.data_manager.get_sensor_list()
         
         # Update all sensors' graph state
         for sensor_name in all_sensors:
@@ -351,6 +350,16 @@ class SensorPanel(QWidget):
         current_search = self.search_bar.text()
         
         self.sensor_tree.clear()
+
+        expected_rows = []
+        expected_rows = self.data_manager.get_expected_sensor_rows()
+        if expected_rows:
+            self._populate_expected_sensor_rows(expected_rows, expansion_states)
+            self.update_stats()
+            self.update_select_all_graph_checkbox()
+            if current_search:
+                self.filter_tree_and_select(current_search, auto_select=False)
+            return
         
         all_sensors = set(self.data_manager.get_sensor_list())
         grouped_sensors = set()
@@ -397,6 +406,78 @@ class SensorPanel(QWidget):
         
         # Note: Removed automatic group expansion when sensors are selected
         # Users can manually expand groups as needed
+
+    def _populate_expected_sensor_rows(self, expected_rows, expansion_states):
+        """Render generated diagram sensors before a CSV has been loaded."""
+        by_group = {}
+        for row in expected_rows:
+            by_group.setdefault(row.get('group') or 'Other Sensors', []).append(row)
+
+        for group_name, rows in sorted(by_group.items()):
+            group_item = QTreeWidgetItem(self.sensor_tree, [group_name])
+            group_item.setExpanded(expansion_states.get(group_name, True))
+            group_item.setFlags(group_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            group_item.setCheckState(2, Qt.CheckState.Unchecked)
+            group_item.setBackground(0, QColor("#e3f2fd"))
+            group_item.setBackground(1, QColor("#e3f2fd"))
+            group_item.setBackground(2, QColor("#e3f2fd"))
+            for row in rows:
+                self.create_expected_sensor_item(row, group_item)
+            self.update_group_checkbox_state(group_item)
+
+    def create_expected_sensor_item(self, row, parent_item):
+        """Create a planned/default sensor row from the generated diagram."""
+        label = row.get('default_label') or row.get('canonical') or ''
+        mapped_label = row.get('mapped_label')
+        sensor_key = mapped_label or label
+        sensor_item = QTreeWidgetItem(parent_item)
+        sensor_item.setText(0, label)
+        sensor_item.setText(1, mapped_label or "Default")
+        sensor_item.setData(0, Qt.ItemDataRole.UserRole, sensor_key)
+        sensor_item.setToolTip(
+            0,
+            f"Default label: {label}\n"
+            f"Canonical: {row.get('canonical') or ''}\n"
+            f"Lab/CSV label: {mapped_label or '(waiting for lab CSV)'}\n"
+            f"Location: {row.get('human_label') or ''}"
+        )
+        sensor_item.setToolTip(1, "Lab/CSV label currently mapped to this diagram point")
+
+        if sensor_key in self.data_manager.selected_sensors or label in self.data_manager.selected_sensors:
+            color = QColor("#ffc107")
+        elif mapped_label:
+            color = QColor("#c8e6c9")
+        else:
+            color = QColor("#fff8e1")
+
+        sensor_item.setBackground(0, color)
+        sensor_item.setBackground(1, color)
+        sensor_item.setBackground(2, color)
+        sensor_item.setFlags(sensor_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+        sensor_item.setCheckState(
+            2,
+            Qt.CheckState.Checked if sensor_key in self.data_manager.graph_sensors else Qt.CheckState.Unchecked
+        )
+
+    def _sensor_key_for_item(self, item):
+        """Return the operational sensor key for a visible row.
+
+        Expected rows display the default lab label in column 0, but once a CSV
+        is mapped the actual dataframe column must be used for selection and
+        graphing.
+        """
+        key = item.data(0, Qt.ItemDataRole.UserRole)
+        return key or item.text(0)
+
+    def _visible_sensor_keys(self):
+        keys = []
+        iterator = QTreeWidgetItemIterator(self.sensor_tree)
+        while iterator.value():
+            item = iterator.value()
+            if item.childCount() == 0:
+                keys.append(self._sensor_key_for_item(item))
+            iterator += 1
+        return keys
     
     def create_sensor_item(self, sensor_name, parent_item):
         """Helper function to create and configure a single sensor item."""
@@ -499,7 +580,7 @@ class SensorPanel(QWidget):
         
         for i in range(group_item.childCount()):
             child = group_item.child(i)
-            sensor_name = child.text(0)
+            sensor_name = self._sensor_key_for_item(child)
             self.data_manager.selected_sensors.add(sensor_name)
         
         self.data_manager.data_changed.emit()
@@ -539,7 +620,7 @@ class SensorPanel(QWidget):
         new_state = not all_checked
         for i in range(group_item.childCount()):
             child = group_item.child(i)
-            sensor_name = child.text(0)
+            sensor_name = self._sensor_key_for_item(child)
             self.data_manager.set_sensor_graphed(sensor_name, new_state)
         
         self.data_manager.data_changed.emit()
@@ -573,7 +654,9 @@ class SensorPanel(QWidget):
         while iterator.value():
             item = iterator.value()
             # Check if this is the sensor we're looking for
-            if item.childCount() == 0 and item.text(0) == sensor_name:
+            if item.childCount() == 0 and (
+                item.text(0) == sensor_name or self._sensor_key_for_item(item) == sensor_name
+            ):
                 # Expand the parent group if collapsed
                 parent = item.parent()
                 if parent:
@@ -604,13 +687,13 @@ class SensorPanel(QWidget):
     
     def update_select_all_graph_checkbox(self):
         """Updates the 'Select All Graph' checkbox based on current graph state."""
-        all_sensors = self.data_manager.get_sensor_list()
+        all_sensors = self._visible_sensor_keys() or self.data_manager.get_sensor_list()
         if not all_sensors:
             self.select_all_graph_checkbox.setCheckState(Qt.CheckState.Unchecked)
             return
         
         # Check how many sensors are graphed
-        graphed_count = len(self.data_manager.graph_sensors)
+        graphed_count = sum(1 for sensor in all_sensors if sensor in self.data_manager.graph_sensors)
         total_count = len(all_sensors)
         
         # Block signals to avoid triggering the handler
@@ -630,14 +713,24 @@ class SensorPanel(QWidget):
         self.select_all_graph_checkbox.blockSignals(False)
 
     def update_stats(self):
-        total = len(self.data_manager.get_sensor_list())
+        total = len(self._visible_sensor_keys() or self.data_manager.get_sensor_list())
         # Prefer new mapping system count if available
         if getattr(self.data_manager, 'count_role_mappings', None):
             mapped = self.data_manager.count_role_mappings()
         else:
             mapped = len(self.data_manager.mappings)
         selected = len(self.sensor_tree.selectedItems())
-        self.stats_label.setText(f"Sensors: {total} | Mapped: {mapped} | Selected: {selected}")
+        text = f"Sensors: {total} | Mapped: {mapped} | Selected: {selected}"
+        if getattr(self.data_manager, 'get_mapping_gaps', None):
+            gaps = self.data_manager.get_mapping_gaps()
+            unmapped_csv = gaps.get('unmapped_csv_count', 0)
+            missing_dots = gaps.get('unmapped_expected_count', 0)
+            no_role = gaps.get('known_but_no_role_count', 0)
+            if unmapped_csv or missing_dots or no_role:
+                text += f" | Gaps CSV:{unmapped_csv} Dots:{missing_dots}"
+                if no_role:
+                    text += f" NoDot:{no_role}"
+        self.stats_label.setText(text)
 
     def on_export_audit_clicked(self):
         """Write audit_export.csv with two header rows and filtered data (overwrite)."""
@@ -690,10 +783,11 @@ class SensorPanel(QWidget):
         while iterator.value():
             item = iterator.value()
             if item.childCount() == 0:  # Sensor item
-                item_sensor_name = item.text(0)
+                item_sensor_name = self._sensor_key_for_item(item)
+                visible_label = item.text(0)
                 
                 # Re-evaluate color for this sensor
-                if item_sensor_name in self.data_manager.selected_sensors:
+                if item_sensor_name in self.data_manager.selected_sensors or visible_label in self.data_manager.selected_sensors:
                     color = QColor("#ffc107")  # Yellow
                 elif getattr(self.data_manager, 'is_sensor_mapped_in_roles', None) and self.data_manager.is_sensor_mapped_in_roles(item_sensor_name):
                     color = QColor("#c8e6c9")  # Green
@@ -709,4 +803,3 @@ class SensorPanel(QWidget):
         """Manually trigger a full data refresh."""
         print("[SENSOR PANEL] Force refresh clicked")
         self.data_manager.data_changed.emit()
-

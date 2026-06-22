@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                              QGraphicsItem, QGraphicsItemGroup, QGraphicsRectItem, QDialog,
                              QDialogButtonBox, QCheckBox)
 from PyQt6.QtGui import QPainter, QColor, QPen, QAction, QBrush, QMouseEvent, QPainterPath
-from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QTimer, QEvent
+from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QTimer, QEvent, QRectF
 from PyQt6.QtWidgets import QGraphicsPathItem, QGraphicsEllipseItem, QGraphicsTextItem
 
 from component_schemas import SCHEMAS
@@ -492,6 +492,7 @@ class DiagramWidget(QWidget):
         self.sensor_boxes = {}  # Track sensor boxes
         self.overlay_items = []  # Mapping mode overlay items
         self._processed_means = None  # column means from last Calculations run (state overlay)
+        self._processed_df = None
         
         self.current_tool = None
         self.pipe_mode = False
@@ -602,19 +603,6 @@ class DiagramWidget(QWidget):
     
     def populate_toolbar(self):
         """Populate toolbar with dropdown menus."""
-        self.toolbar.addSeparator()
-        
-        # Aggregation method selector
-        aggregation_label = QLabel("Aggregation:")
-        self.toolbar.addWidget(aggregation_label)
-        
-        self.aggregation_combo = QComboBox()
-        self.aggregation_combo.addItems(['Average', 'Maximum', 'Minimum'])
-        self.aggregation_combo.setCurrentText(self.data_manager.value_aggregation)
-        self.aggregation_combo.setToolTip("Select how to aggregate sensor data over time")
-        self.aggregation_combo.currentTextChanged.connect(self.on_aggregation_changed)
-        self.toolbar.addWidget(self.aggregation_combo)
-        
         self.toolbar.addSeparator()
         
         # New diagram from template
@@ -993,6 +981,7 @@ class DiagramWidget(QWidget):
         self.pipe_items.clear()
         self.sensor_boxes.clear()
         self.overlay_items.clear()
+        self._role_label_rects = []
         
         model = self.data_manager.diagram_model
         
@@ -1040,6 +1029,9 @@ class DiagramWidget(QWidget):
                 item = SplitterComponentItem(comp_id, comp_data, self.data_manager)
             elif comp_type == 'CombinerManifold':
                 item = CombinerComponentItem(comp_id, comp_data, self.data_manager)
+            elif comp_type == 'SimpleSensorDot':
+                from diagram_components import SimpleSensorDotItem
+                item = SimpleSensorDotItem(comp_id, comp_data, self.data_manager)
             else:
                 item = BaseComponentItem(comp_id, comp_data, self.data_manager)
             self.scene.addItem(item)
@@ -1088,9 +1080,8 @@ class DiagramWidget(QWidget):
                     self.component_items[comp_id].group_id = group_id
                     self.component_items[comp_id].setOpacity(0.9)
 
-        # In Mapping/Analysis modes, overlay sensor role dots
-        if getattr(self, 'mode_combo', None) and self.mode_combo.currentText() in ('Mapping', 'Analysis'):
-            self.add_sensor_role_dots()
+        # Always overlay sensor role dots (since they are now clean visuals)
+        self.add_sensor_role_dots()
 
         # In Analysis mode, overlay computed thermodynamic states on pipes
         if getattr(self, 'mode_combo', None) and self.mode_combo.currentText() == 'Analysis':
@@ -1114,7 +1105,9 @@ class DiagramWidget(QWidget):
         try:
             if processed_df is None or processed_df.empty:
                 self._processed_means = None
+                self._processed_df = None
             else:
+                self._processed_df = processed_df.copy()
                 self._processed_means = processed_df.mean(numeric_only=True)
             print(f"[STATE OVERLAY] Cached means for "
                   f"{0 if self._processed_means is None else len(self._processed_means)} columns")
@@ -1337,6 +1330,18 @@ class DiagramWidget(QWidget):
                     # should be mappable. Skip inlet/outlet to avoid accidental mapping.
                     if comp_type == 'Sensor' and port_type in ('in', 'out'):
                         continue
+                    # Generated LabeledBox components (hot-gas bypass/solenoid,
+                    # liquid-line solenoid) use ports only for pipe routing. The
+                    # actual mapped solenoid sensors live in canonical sensor
+                    # boxes, so showing port dots here creates confusing floaters.
+                    if (self.data_manager.diagram_model.get('_simple_mode')
+                            and comp_type == 'LabeledBox'):
+                        continue
+                    # Avoid duplicate dots near evaporators by suppressing manifold connecting ports
+                    if comp_type == 'SplitterManifold' and port_type == 'out':
+                        continue
+                    if comp_type == 'CombinerManifold' and port_type == 'in':
+                        continue
                     pos = port.get_scene_position()
 
                     # Create meaningful role key for diagnostics
@@ -1351,15 +1356,26 @@ class DiagramWidget(QWidget):
                         role_key = f"{comp_type}.{comp_id}.{port_name}"
 
                     enabled = self.data_manager.is_sensor_point_enabled(role_key)
+                    
+                    # Resolve canonical name for a much cleaner label
+                    display_name = role_key
+                    try:
+                        from sensor_canonical import resolve_canonical_from_role_key
+                        cres = resolve_canonical_from_role_key(self.data_manager.diagram_model, role_key)
+                        if cres and cres[0]:
+                            display_name = cres[0]
+                    except Exception:
+                        pass
+
+                    mapped_sensor = self.data_manager.get_mapped_sensor_for_role(role_key)
+
+                    label = ""
                     if mapped_sensor:
-                        if is_analysis:
-                            val = self.data_manager.get_sensor_value(mapped_sensor)
-                            label = ("" if val is None else (f"{val:.1f}" if isinstance(val, (int, float)) else str(val)))
-                        else:
-                            num = self.data_manager.get_sensor_number(mapped_sensor)
-                            label = f"#{num}" if num is not None else ""
-                    else:
-                        label = ""
+                        val = self.data_manager.get_sensor_value(mapped_sensor)
+                        if isinstance(val, (int, float)):
+                            label = f"{val:.1f}"
+                        elif val is not None:
+                            label = str(val)
 
                     self._add_role_dot(pos, role_key, label, port_item=port,
                                        enabled=enabled)
@@ -1375,19 +1391,20 @@ class DiagramWidget(QWidget):
             
             # Use sensor_id as role_key for mapping
             mapped_sensor = self.data_manager.get_mapped_sensor_for_role(sensor_id)
-            if mapped_sensor:
-                if is_analysis:
-                    val = self.data_manager.get_sensor_value(mapped_sensor)
-                    label = ("" if val is None else (f"{val:.1f}" if isinstance(val, (int, float)) else str(val)))
-                else:
-                    num = self.data_manager.get_sensor_number(mapped_sensor)
-                    if num is not None:
-                        label = f"#{num}"
-                    else:
-                        label = ""
-            else:
-                # Generate smart label based on sensor type and detected circuit
-                label = self._generate_smart_label(sensor_type, sensor_data)
+            calc_key = sensor_data.get('calc_key')
+            label = ""
+            if is_analysis and calc_key and self._processed_means is not None:
+                val = self._processed_means.get(calc_key)
+                try:
+                    label = f"{float(val):.1f}" if val is not None else ""
+                except Exception:
+                    label = ""
+            elif mapped_sensor:
+                val = self.data_manager.get_sensor_value(mapped_sensor)
+                if isinstance(val, (int, float)):
+                    label = f"{val:.1f}"
+                elif val is not None:
+                    label = str(val)
             
             # Pass sensor_data for tooltip generation
             self._add_role_dot(pos, sensor_id, label, is_custom=True, custom_sensor_data=sensor_data, sensor_id=sensor_id)
@@ -1417,6 +1434,128 @@ class DiagramWidget(QWidget):
 
         return QColor(color_map.get(status, '#FFA500'))  # Default to orange if unknown
 
+    def _short_role_label(self, role_key):
+        """Compact visible dot label; full canonical stays in the tooltip."""
+        canon = role_key
+        try:
+            from sensor_canonical import resolve_canonical_from_role_key
+            cres = resolve_canonical_from_role_key(self.data_manager.diagram_model, role_key)
+            if cres and cres[0]:
+                canon = cres[0]
+        except Exception:
+            pass
+
+        parts = canon.split('.')
+        if canon.startswith('T_air.fan_in.'):
+            return f"FI {parts[2]} {parts[3]}" if len(parts) > 3 else canon
+        if canon.startswith('T_air.fan_off.'):
+            return f"FO {parts[2]} {parts[3]}" if len(parts) > 3 else canon
+        if canon.startswith('T_air.cond_in.'):
+            unit = f" {parts[3]}" if len(parts) > 3 else ''
+            return f"CI {parts[2]}{unit}" if len(parts) > 2 else canon
+        if canon.startswith('T_air.cond_out.'):
+            unit = f" {parts[3]}" if len(parts) > 3 else ''
+            return f"CO {parts[2]}{unit}" if len(parts) > 2 else canon
+        if canon.startswith('T_air.disc.'):
+            return f"DA {parts[-1]}"
+        if canon.startswith('T_air.sec.'):
+            return f"SA {parts[-1]}"
+        if canon.startswith('T_air.ret.'):
+            return f"RA {parts[-1]}"
+        if canon.startswith('T_prod.'):
+            custom = (self.data_manager.diagram_model.get('custom_sensors') or {}).get(role_key) or {}
+            paired = custom.get('paired_canonical')
+            if paired:
+                b = paired.split('.')
+                if len(parts) >= 4 and len(b) >= 4:
+                    return f"{parts[1]}/{b[1]} {parts[2]}"
+            return f"{parts[1]} {parts[2]} {parts[3]}" if len(parts) > 3 else canon
+        if canon.startswith('T_door.'):
+            suffix_map = {
+                'top.L': 'TL', 'top.R': 'TR',
+                'ctr': 'C', 'btm.L': 'BL', 'btm.R': 'BR',
+            }
+            suffix = '.'.join(parts[2:])
+            return f"D{parts[1][1:]} {suffix_map.get(suffix, suffix)}" if len(parts) > 2 else canon
+        if canon.startswith('T_mull.'):
+            suffix_map = {'top': 'T', 'upper': 'U', 'ctr': 'C', 'lower': 'L', 'btm': 'B'}
+            return f"M {parts[1]} {suffix_map.get(parts[2], parts[2])}" if len(parts) > 2 else canon
+        if canon.startswith('T_coil.'):
+            direction = parts[2][0] if len(parts) > 2 and parts[2] else ''
+            return f"{parts[1]} {direction}{parts[3]}" if len(parts) > 3 else canon
+        if canon.startswith('T_txv.'):
+            direction = parts[2][0] if len(parts) > 2 and parts[2] else ''
+            return f"txv {parts[1]} {direction}" if len(parts) > 2 else canon
+        if canon.startswith('T_dist.'):
+            return f"dist {parts[1]}" if len(parts) > 1 else canon
+        if canon.startswith('T_defrost.'):
+            return f"def {parts[1]}" if len(parts) > 1 else canon
+        if canon.startswith('calc.SH_total'):
+            return 'SH total'
+        if canon.startswith('calc.SH.'):
+            return f"SH {parts[-1].upper()}" if parts else 'SH'
+        if canon.startswith('calc.SC_txv.'):
+            return f"SC TXV {parts[-1].upper()}" if parts else 'SC TXV'
+        if canon.startswith('calc.SC_cond'):
+            return f"SC {parts[-1].upper()}" if canon != 'calc.SC_cond' else 'SC cond'
+        if role_key.startswith('SplitterManifold.') and role_key.endswith('.inlet'):
+            try:
+                comp_id = role_key.split('.')[1]
+                comp = (self.data_manager.diagram_model.get('components') or {}).get(comp_id, {})
+                label = ((comp.get('properties') or {}).get('circuit_label') or '').lower()
+                tag = {'left': 'lh', 'center': 'ctr', 'right': 'rh'}.get(label, label)
+                return f"dist {tag}" if tag and tag != 'none' else 'dist'
+            except Exception:
+                return 'dist'
+        if canon == role_key:
+            return None
+        return canon.replace('T_', '').replace('P_', 'P ')
+
+    def _label_side_for_role(self, role_key, custom_sensor_data=None, port_item=None):
+        if custom_sensor_data and custom_sensor_data.get('display_side'):
+            return custom_sensor_data['display_side']
+        try:
+            p = port_item.port_name if port_item is not None else ''
+        except Exception:
+            p = ''
+        if p in ('inlet', 'inlet_1') or p.startswith('inlet_circuit_'):
+            return 'above'
+        if p in ('outlet', 'outlet_1') or p.startswith('outlet_circuit_'):
+            return 'below'
+        if p in ('water_in_temp', 'water_out_temp', 'SP', 'RPM'):
+            return 'left'
+        return 'right'
+
+    def _candidate_role_label_rect(self, x, y, w, h, side, attempt):
+        r = 8
+        gap = 2
+        offsets = [0, -1, 1, -2, 2, -3, 3, -4, 4]
+        if side == 'right':
+            lane = attempt // 2
+            sign = -1 if attempt % 2 else 1
+            return QRectF(x + r + gap, y - 7 + sign * lane * 12, w, h)
+        if side == 'left':
+            lane = attempt // 2
+            sign = -1 if attempt % 2 else 1
+            return QRectF(x - r - gap - w, y - 7 + sign * lane * 12, w, h)
+        row = attempt // len(offsets)
+        col = offsets[attempt % len(offsets)]
+        px = x - w / 2 + col * 24
+        py = y - 16 - row * 12 if side == 'above' else y + r + gap + row * 12
+        return QRectF(px, py, w, h)
+
+    def _place_role_label(self, txt, x, y, side):
+        bounds = txt.boundingRect()
+        last_rect = None
+        for attempt in range(45):
+            rect = self._candidate_role_label_rect(x, y, bounds.width(), bounds.height(), side, attempt)
+            last_rect = rect
+            padded = rect.adjusted(-2, -1, 2, 1)
+            if not any(padded.intersects(existing) for existing in self._role_label_rects):
+                break
+        txt.setPos(last_rect.x(), last_rect.y())
+        self._role_label_rects.append(last_rect.adjusted(-2, -1, 2, 1))
+
     def _add_role_dot(self, scene_pos, role_key, label_text, is_custom=False,
                       custom_sensor_data=None, sensor_id=None, port_item=None,
                       enabled=True):
@@ -1429,11 +1568,13 @@ class DiagramWidget(QWidget):
         # Dot item - use square for custom sensors, circle for component ports
         # Selected: bright cyan, 2.8x scale (distinct from out-of-range red)
         SELECTED_COLOR = QColor('#00D4FF')  # Bright cyan - impossible to miss
-        SELECTED_SCALE = 2.8
+        DOT_RADIUS = 4
+        DOT_DIAMETER = DOT_RADIUS * 2
+        SELECTED_SCALE = 2.2
 
         # DISABLED: grey, semi-transparent, no label, X drawn on top
         if not enabled:
-            dot = QGraphicsEllipseItem(-6, -6, 12, 12) if not is_custom else QGraphicsRectItem(-6, -6, 12, 12)
+            dot = QGraphicsEllipseItem(-DOT_RADIUS, -DOT_RADIUS, DOT_DIAMETER, DOT_DIAMETER) if not is_custom else QGraphicsRectItem(-DOT_RADIUS, -DOT_RADIUS, DOT_DIAMETER, DOT_DIAMETER)
             disabled_color = QColor('#606060')
             disabled_color.setAlphaF(0.45)
             dot.setBrush(QBrush(disabled_color))
@@ -1444,9 +1585,9 @@ class DiagramWidget(QWidget):
             dot.setToolTip(f"Sensor spot OFF\nRight-click to enable")
             dot.setData(0, role_key)
             # X mark
-            x1 = QGraphicsLineItem(-4, -4, 4, 4, dot)
-            x2 = QGraphicsLineItem(-4,  4, 4, -4, dot)
-            x_pen = QPen(QColor('#CCCCCC'), 1.5)
+            x1 = QGraphicsLineItem(-3, -3, 3, 3, dot)
+            x2 = QGraphicsLineItem(-3,  3, 3, -3, dot)
+            x_pen = QPen(QColor('#CCCCCC'), 1)
             x1.setPen(x_pen); x2.setPen(x_pen)
             self.scene.addItem(dot)
             self.dot_items[role_key] = dot
@@ -1460,16 +1601,16 @@ class DiagramWidget(QWidget):
             return  # skip label for disabled dots
 
         if is_custom:
-            # Square for custom sensors
-            dot = QGraphicsRectItem(-6, -6, 12, 12)
+            # Circle for custom sensors
+            dot = QGraphicsEllipseItem(-DOT_RADIUS, -DOT_RADIUS, DOT_DIAMETER, DOT_DIAMETER)
             if is_selected:
                 dot.setBrush(QBrush(SELECTED_COLOR))
-                dot.setPen(QPen(QColor(Qt.GlobalColor.black), 4))
+                dot.setPen(QPen(QColor(Qt.GlobalColor.black), 2))
                 dot.setScale(SELECTED_SCALE)
             else:
                 dot_color = self._get_sensor_color(role_key, mapped_sensor)
                 dot.setBrush(QBrush(dot_color))
-                dot.setPen(QPen(QColor(Qt.GlobalColor.black), 2))
+                dot.setPen(QPen(QColor(Qt.GlobalColor.black), 1))
                 dot.setScale(1.0)
 
             # Store sensor_id for property viewing and deletion
@@ -1478,10 +1619,10 @@ class DiagramWidget(QWidget):
                 dot.setData(1, 'custom_sensor')  # Mark as custom sensor in slot 1
         else:
             # Circle for component ports
-            dot = QGraphicsEllipseItem(-6, -6, 12, 12)
+            dot = QGraphicsEllipseItem(-DOT_RADIUS, -DOT_RADIUS, DOT_DIAMETER, DOT_DIAMETER)
             if is_selected:
                 dot.setBrush(QBrush(SELECTED_COLOR))
-                dot.setPen(QPen(QColor(Qt.GlobalColor.black), 4))
+                dot.setPen(QPen(QColor(Qt.GlobalColor.black), 2))
                 dot.setScale(SELECTED_SCALE)
             else:
                 dot_color = self._get_sensor_color(role_key, mapped_sensor)
@@ -1512,6 +1653,8 @@ class DiagramWidget(QWidget):
             pass
 
         if canon_lines:
+            if custom_sensor_data and custom_sensor_data.get('paired_canonical'):
+                canon_lines.append(f"<small>Shared with: {custom_sensor_data['paired_canonical']}</small>")
             tooltip = "<br>".join(canon_lines)
             tooltip += "<br><br><small>Left-click: map · Right-click: menu</small>"
         elif port_item and hasattr(port_item, 'toolTip'):
@@ -1532,37 +1675,7 @@ class DiagramWidget(QWidget):
                 tooltip = "Left-click: Map sensor\nRight-click: Unmap"
         dot.setToolTip(tooltip)
         
-        # Label item - positioned OUTSIDE to the right for better readability
-        # Use DraggableTextItem for diagram dots (sensor_box=None)
-        label = DraggableTextItem(label_text, None, None, role_key, 'label')
-        label.role_key = role_key
-        label.dot_item = dot
-        label.data_manager = self.data_manager
-        
-        # Always keep text black regardless of mapping status
-        label.setDefaultTextColor(QColor('#000000'))
-        
-        # Make sensor labels bold for better visibility
-        from PyQt6.QtGui import QFont
-        font = QFont()
-        font.setBold(True)
-        font.setPointSize(10)
-        label.setFont(font)
-        
-        # Store the font for later use when text is updated
-        label._bold_font = font
-        
-        label.setZValue(150)  # Higher than dot (100) to ensure it receives mouse events
-        
-        # Load saved offset from diagram_model or use default
-        default_offset = {'dx': 15, 'dy': -10}
-        saved_offset = self.data_manager.diagram_model.get('role_dot_labels', {}).get(role_key, default_offset)
-        
-        # Position label using saved offset or default
-        label.setPos(QPointF(scene_pos.x() + saved_offset['dx'], scene_pos.y() + saved_offset['dy']))
-        
-        # Store role_key for later updates
-        label.setData(0, role_key)
+        # Label creation removed per user request. Labels will be handled as hover tooltips.
         # Click handler to map selected sensor -> role (left click) or unmap (right click)
         # Defer left-click action to avoid interrupting double-click detection
         single_click = { 'timer': None }
@@ -1661,24 +1774,24 @@ class DiagramWidget(QWidget):
         except Exception as e:
             print(f"[TEST_DOUBLE_CLICK] Error assigning double-click handler: {e}")
         
-        # Also allow clicking the label to map
-        # Store handlers as attributes so DraggableTextItem can call them
-        def on_label_press(event):
-            on_press(event)
-        label.custom_click_handler = on_label_press
-        label.custom_double_click_handler = on_double_click
-        label.setAcceptedMouseButtons(Qt.MouseButton.LeftButton | Qt.MouseButton.RightButton)
         # Add to scene and track
         self.scene.addItem(dot)
-        self.scene.addItem(label)
         self.overlay_items.append(dot)
-        self.overlay_items.append(label)
-        
-        # Debug: Log label creation
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.info(f"[DIAGRAM] Created draggable label for role_key={role_key}, zValue={label.zValue()}, pos=({label.pos().x():.1f}, {label.pos().y():.1f}), ItemIsMovable={bool(label.flags() & QGraphicsItem.GraphicsItemFlag.ItemIsMovable)}")
-    
+
+        if self.data_manager.diagram_model.get('_simple_mode'):
+            visible_label = label_text
+            if not visible_label:
+                return
+            label = QGraphicsTextItem(visible_label)
+            f = label.font()
+            f.setPointSize(6)
+            label.setFont(f)
+            label.setDefaultTextColor(QColor('#222222'))
+            label.setZValue(100)
+            side = self._label_side_for_role(role_key, custom_sensor_data, port_item)
+            self._place_role_label(label, scene_pos.x(), scene_pos.y(), side)
+            self.scene.addItem(label)
+            self.overlay_items.append(label)
     def _attach_sensor_handlers_to_box(self, box_item):
         """Attach mapping handlers to sensor dots in a SensorBoxItem."""
         for sensor_id, sensor_info in box_item.sensors.items():
@@ -1787,16 +1900,15 @@ class DiagramWidget(QWidget):
                     if is_selected:
                         item.setBrush(QBrush(QColor('#00D4FF')))  # Bright cyan - selected
                         if hasattr(item, 'setPen'):
-                            item.setPen(QPen(QColor(Qt.GlobalColor.black), 4))
+                            item.setPen(QPen(QColor(Qt.GlobalColor.black), 2))
                         if hasattr(item, 'setScale'):
-                            item.setScale(2.8)
+                            item.setScale(2.2)
                     else:
                         # Use new range-aware color scheme
                         dot_color = self._get_sensor_color(role_key, mapped_sensor)
                         item.setBrush(QBrush(dot_color))
                         if hasattr(item, 'setPen'):
-                            pen_width = 2 if mapped_sensor else 1
-                            item.setPen(QPen(QColor(Qt.GlobalColor.black), pen_width))
+                            item.setPen(QPen(QColor(Qt.GlobalColor.black), 1))
                         if hasattr(item, 'setScale'):
                             item.setScale(1.0)
                     updated_count += 1
@@ -2023,6 +2135,9 @@ class DiagramWidget(QWidget):
         new_model.pop('_generated_from', None)
         self.data_manager.diagram_model.clear()
         self.data_manager.diagram_model.update(new_model)
+        if self.data_manager.csv_data is not None:
+            cols = [c for c in self.data_manager.csv_data.columns if c != 'Timestamp']
+            self.data_manager.auto_map_csv_to_canonical(cols)
         self.data_manager.diagram_model_changed.emit()
 
         QTimer.singleShot(350, self.zoom_to_fit)
@@ -2338,18 +2453,211 @@ class DiagramWidget(QWidget):
         dialog.exec()
         print(f"[DIALOG] Dialog execution completed")
     
+    def show_sensor_info_dialog(self, sensor_name, custom_sensor_data=None, is_custom=False, role_key=None):
+        """Show the lab-facing sensor summary for a diagram point."""
+        if is_custom and not role_key:
+            role_key = sensor_name
+
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit
+
+        info = self._build_sensor_info(role_key, sensor_name, custom_sensor_data)
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Sensor Information - {info['default_label']}")
+        dialog.setMinimumSize(620, 460)
+
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel(f"<h2>{info['default_label']}</h2>"))
+
+        info_text = QTextEdit()
+        info_text.setReadOnly(True)
+        info_text.setPlainText(self._format_sensor_info_text(info))
+        layout.addWidget(info_text)
+
+        button_row = QHBoxLayout()
+        range_btn = QPushButton("Edit Range...")
+        range_btn.clicked.connect(lambda: self._open_range_editor_from_info(dialog))
+        button_row.addWidget(range_btn)
+        button_row.addStretch()
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.accept)
+        button_row.addWidget(close_btn)
+        layout.addLayout(button_row)
+
+        dialog.exec()
+
+    def _build_sensor_info(self, role_key, fallback_name, custom_sensor_data=None):
+        from sensor_canonical import resolve_canonical_from_role_key
+
+        row = None
+        if role_key:
+            for candidate in self.data_manager.get_expected_sensor_rows(include_disabled=True):
+                if candidate.get('role_key') == role_key:
+                    row = candidate
+                    break
+
+        canonical = role_key or fallback_name
+        human = fallback_name
+        if row:
+            canonical = row.get('canonical') or canonical
+            human = row.get('human_label') or human
+            default_label = row.get('default_label') or human or canonical
+        else:
+            resolved = resolve_canonical_from_role_key(self.data_manager.diagram_model, role_key or fallback_name)
+            if resolved:
+                canonical, human = resolved
+            default_label = (custom_sensor_data or {}).get('label') or human or canonical
+
+        csv_column = self.data_manager.get_mapped_sensor_for_role(role_key) if role_key else None
+        if not csv_column and fallback_name and fallback_name in self.data_manager.get_sensor_list():
+            csv_column = fallback_name
+
+        calc_key = (custom_sensor_data or {}).get('calc_key')
+        stats_source = "No data"
+        stats_column = None
+        stats = None
+
+        filtered = self.data_manager.get_filtered_data()
+        if csv_column and filtered is not None and csv_column in filtered.columns:
+            stats = self._stats_for_series(filtered[csv_column])
+            stats_source = "CSV column (current filter)"
+            stats_column = csv_column
+        elif calc_key and self._processed_df is not None and calc_key in self._processed_df.columns:
+            stats = self._stats_for_series(self._processed_df[calc_key])
+            stats_source = "Calculated result"
+            stats_column = calc_key
+
+        full_points = 0
+        if csv_column and self.data_manager.csv_data is not None and csv_column in self.data_manager.csv_data.columns:
+            full_points = len(self.data_manager.csv_data[csv_column].dropna())
+        elif calc_key and self._processed_df is not None and calc_key in self._processed_df.columns:
+            full_points = len(self._processed_df[calc_key].dropna())
+
+        csv_column_ref = "---"
+        if csv_column and self.data_manager.csv_data is not None and csv_column in self.data_manager.csv_data.columns:
+            csv_column_ref = f"Col {self._excel_column_name(list(self.data_manager.csv_data.columns).index(csv_column))}"
+
+        range_key = csv_column or default_label
+        range_info = (
+            self.data_manager.sensor_ranges.get(range_key)
+            or self.data_manager.sensor_ranges.get(default_label)
+            or self.data_manager.sensor_ranges.get(role_key or '')
+        )
+
+        return {
+            "default_label": default_label,
+            "csv_column": csv_column,
+            "canonical": canonical,
+            "role_key": role_key,
+            "location": human,
+            "sensor_type": (custom_sensor_data or {}).get('type'),
+            "calc_key": calc_key,
+            "stats_source": stats_source,
+            "stats_column": stats_column,
+            "csv_column_ref": csv_column_ref,
+            "stats": stats or {},
+            "full_points": full_points,
+            "filtered_rows": 0 if filtered is None else len(filtered),
+            "time_range": self.data_manager.time_range,
+            "range_key": range_key,
+            "range_info": range_info,
+        }
+
+    @staticmethod
+    def _stats_for_series(series):
+        import pandas as pd
+        raw = series.dropna()
+        numeric = pd.to_numeric(series, errors='coerce').dropna()
+        if numeric.empty:
+            return {
+                "points": len(raw),
+                "numeric_points": 0,
+                "average": None,
+                "minimum": None,
+                "maximum": None,
+                "range": None,
+            }
+        minimum = float(numeric.min())
+        maximum = float(numeric.max())
+        return {
+            "points": int(len(raw)),
+            "numeric_points": int(len(numeric)),
+            "average": float(numeric.mean()),
+            "minimum": minimum,
+            "maximum": maximum,
+            "range": maximum - minimum,
+        }
+
+    @staticmethod
+    def _fmt_stat(value):
+        return "---" if value is None else f"{value:.2f}"
+
+    @staticmethod
+    def _excel_column_name(index):
+        name = ""
+        while index >= 0:
+            name = chr(65 + (index % 26)) + name
+            index = index // 26 - 1
+        return name
+
+    def _format_sensor_info_text(self, info):
+        stats = info.get("stats") or {}
+        range_info = info.get("range_info")
+        lines = [
+            "SENSOR LABELS",
+            f"Sensor name - default: {info.get('default_label') or '---'}",
+            f"Sensor name in CSV file: {info.get('csv_column') or 'Not mapped / not loaded'}",
+            f"CSV column: {info.get('csv_column_ref') or '---'}",
+        ]
+        if info.get("calc_key"):
+            lines.append(f"Calculated column: {info.get('calc_key')}")
+            lines.append(f"Calculated value: {info.get('calc_key')}")
+
+        lines.extend([
+            "",
+            "DATA SUMMARY",
+            f"Time/filter range: {info.get('time_range')}",
+            f"Rows in current filter: {info.get('filtered_rows')}",
+            f"Data points in full source: {info.get('full_points')}",
+            f"Valid data points used: {stats.get('numeric_points', 0)}",
+            f"Average: {self._fmt_stat(stats.get('average'))}",
+            f"Minimum: {self._fmt_stat(stats.get('minimum'))}",
+            f"Maximum: {self._fmt_stat(stats.get('maximum'))}",
+            f"Data range (max - min): {self._fmt_stat(stats.get('range'))}",
+            "",
+            "ACCEPTABLE RANGE",
+        ])
+        if range_info:
+            lines.append(f"Range key: {info.get('range_key')}")
+            lines.append(f"Minimum allowed: {range_info.get('min')}")
+            lines.append(f"Maximum allowed: {range_info.get('max')}")
+        else:
+            lines.append("No acceptable range set.")
+            lines.append(f"Range key: {info.get('range_key') or '---'}")
+        return "\n".join(lines)
+
+    def _open_range_editor_from_info(self, parent_dialog):
+        from range_editor_dialog import RangeEditorDialog
+        dialog = RangeEditorDialog(self.data_manager, parent=self)
+        dialog.exec()
+        parent_dialog.accept()
+
     def _generate_smart_label(self, sensor_type, sensor_data):
         """Generate smart label for custom sensors based on type and detected circuit."""
         # Sensor type abbreviations
         type_abbrev = {
             'superheat': 'SH',
             'subcooling': 'SC',
+            'calculation': 'CALC',
             'suction_temp': 'ST',
             'discharge_temp': 'DT',
             'liquid_temp': 'LT',
             'ambient_temp': 'AMB',
             'case_temp': 'CT'
         }
+
+        if sensor_data.get('calc_key'):
+            return sensor_data.get('label') or sensor_data.get('calc_key')
         
         abbrev = type_abbrev.get(sensor_type, sensor_type.upper()[:3])
         
@@ -4007,5 +4315,3 @@ class SensorDot(QFrame):
             # Debug: Show current mapping status
             self.data_manager.debug_sensor_mappings()
         event.accept()
-
-
