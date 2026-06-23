@@ -193,6 +193,27 @@ class GitRunner:
     def branch_info(self):
         return self._run(["branch", "-vv"])
 
+    def switch_or_create_branch(self, branch_name):
+        branch_name = branch_name.strip()
+        if not branch_name:
+            return False, "Branch name is empty."
+        ok_fetch, out_fetch = self._run(["fetch", "origin"], timeout=180)
+        ok_local, _ = self._run(["show-ref", "--verify", f"refs/heads/{branch_name}"])
+        if ok_local:
+            ok, out = self._run(["checkout", branch_name])
+        else:
+            ok_remote, _ = self._run(["show-ref", "--verify", f"refs/remotes/origin/{branch_name}"])
+            if ok_remote:
+                ok, out = self._run(["checkout", "-B", branch_name, f"origin/{branch_name}"])
+            else:
+                ok, out = self._run(["checkout", "-b", branch_name])
+        pieces = []
+        if out_fetch:
+            pieces.append(out_fetch)
+        if out:
+            pieces.append(out)
+        return ok and (ok_fetch or "origin" not in out_fetch.lower()), "\n".join(pieces).strip()
+
     def remote_url(self):
         return self._run(["remote", "get-url", "origin"])
 
@@ -409,10 +430,13 @@ class GitHelperWindow(QMainWindow):
 
         row_adv4 = QHBoxLayout()
         btn_change_repo = QPushButton("Change GitHub Repo")
+        btn_switch_branch = QPushButton("Switch/Create Branch")
         btn_choose_folder = QPushButton("Open Different Folder")
         btn_change_repo.clicked.connect(self.do_change_remote)
+        btn_switch_branch.clicked.connect(self.do_switch_branch)
         btn_choose_folder.clicked.connect(self.do_choose_repo_folder)
         row_adv4.addWidget(btn_change_repo)
+        row_adv4.addWidget(btn_switch_branch)
         row_adv4.addWidget(btn_choose_folder)
         adv_lay.addLayout(row_adv4)
 
@@ -524,6 +548,7 @@ class GitHelperWindow(QMainWindow):
 
         ok, branch = self.git.current_branch()
         if ok:
+            current_branch = branch.strip()
             ok2, detail = self.git.branch_info()
             tracking = ""
             if ok2:
@@ -531,7 +556,8 @@ class GitHelperWindow(QMainWindow):
                     if line.startswith("*"):
                         tracking = line[2:].strip()
                         break
-            self.branch_label.setText(f"Branch: {tracking if tracking else branch.strip()}")
+            self.branch_label.setText(f"Branch: {tracking if tracking else current_branch}")
+            self.btn_push.setText(f"6. Push ({current_branch})")
         ok_remote, remote = self.git.remote_url()
         self.remote_label.setText(f"Remote: {remote.strip() if ok_remote else '(none)'}")
 
@@ -675,6 +701,23 @@ class GitHelperWindow(QMainWindow):
         self._run_and_display(
             f"remote set-url origin {url.strip()}",
             lambda: self.git.set_remote_url(url.strip()),
+        )
+
+    def do_switch_branch(self):
+        ok_branch, current = self.git.current_branch()
+        current = current.strip() if ok_branch else ""
+        branch, ok = QInputDialog.getText(
+            self,
+            "Switch/Create Branch",
+            "Branch to use for Pull/Push:\n\n"
+            "Example: New-rev-6/22",
+            text=current,
+        )
+        if not ok or not branch.strip():
+            return
+        self._run_and_display(
+            f"checkout {branch.strip()}",
+            lambda: self.git.switch_or_create_branch(branch.strip()),
         )
 
     def do_choose_repo_folder(self):
